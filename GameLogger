@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 local RunService = game:GetService("RunService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -24,23 +25,31 @@ if ENV.MorantActionRecorder and type(ENV.MorantActionRecorder.Destroy) == "funct
     pcall(ENV.MorantActionRecorder.Destroy)
 end
 
+local HUB_NAME = "VOID × MONTRAX"
+local HUB_TAG = "VOIDMONTRAX"
 local MAX_LINES = 6000
 local MAX_ON_SCREEN = 180
 local MAX_GUI_WATCHES = 2400
 local MAX_REMOTE_WATCHES = 900
 local MAX_INTERACT_WATCHES = 700
 local MAX_AUDIO_WATCHES = 350
+local MAX_MODEL_SCAN = 80000
+
 local CATEGORIES = {"ALL", "GUI", "REMOTE", "INTERACT", "INPUT", "TOOL", "CHARACTER", "PLAYER", "WORLD", "AUDIO", "SYSTEM"}
 local COLORS = {
-    background = Color3.fromRGB(19, 21, 27),
-    surface = Color3.fromRGB(29, 33, 42),
-    elevated = Color3.fromRGB(38, 43, 54),
-    line = Color3.fromRGB(65, 71, 84),
-    foreground = Color3.fromRGB(238, 242, 248),
-    muted = Color3.fromRGB(158, 168, 183),
-    accent = Color3.fromRGB(114, 160, 252),
+    background = Color3.fromRGB(14, 15, 22),
+    surface = Color3.fromRGB(22, 25, 36),
+    elevated = Color3.fromRGB(34, 38, 54),
+    line = Color3.fromRGB(58, 64, 88),
+    foreground = Color3.fromRGB(230, 235, 250),
+    muted = Color3.fromRGB(150, 160, 185),
+    accent = Color3.fromRGB(124, 92, 255),
+    accent2 = Color3.fromRGB(34, 211, 238),
     green = Color3.fromRGB(112, 207, 155),
     red = Color3.fromRGB(241, 129, 140),
+    orange = Color3.fromRGB(255, 165, 80),
+    pink = Color3.fromRGB(244, 114, 182),
+    cyan = Color3.fromRGB(80, 200, 220),
 }
 
 local state = {
@@ -48,7 +57,9 @@ local state = {
     paused = false,
     minimized = false,
     closed = false,
+    dockSide = "right",
     filter = "ALL",
+    hotkey = Enum.KeyCode.F8,
     capture = {GUI = true, INPUT = true, INTERACT = true, REMOTE = true,
                ARGS = false, TOOL = true, CHARACTER = true, PLAYER = true,
                WORLD = true, AUDIO = true},
@@ -81,6 +92,7 @@ local state = {
     lastInteraction = "none",
     gameName = game.Name,
     saveSequence = 0,
+    notificationsEnabled = true,
 }
 
 local function bind(signal, callback, ownership)
@@ -236,7 +248,7 @@ local function report()
         end
     end
     return table.concat({
-        "MORANTXHUB UNIVERSAL GAME LOGGER v2.1 | CLIENT-OBSERVED SESSION",
+        HUB_NAME .. " UNIVERSAL GAME LOGGER v3.1 | CLIENT-OBSERVED SESSION",
         "Game: " .. tostring(state.gameName),
         "PlaceId: " .. tostring(game.PlaceId) .. " | UniverseId: " .. tostring(game.GameId),
         "Exported at: " .. os.date("%Y-%m-%d %H:%M:%S"),
@@ -272,8 +284,8 @@ local function round(target, radius)
     return target
 end
 
-local function outline(target)
-    instance("UIStroke", {Color = COLORS.line, Thickness = 1}, target)
+local function outline(target, color)
+    instance("UIStroke", {Color = color or COLORS.line, Thickness = 1}, target)
     return target
 end
 
@@ -307,7 +319,7 @@ local function button(parent, title, position, size, background)
 end
 
 local gui = instance("ScreenGui", {
-    Name = "MorantxHub_UniversalGameLogger_Local",
+    Name = HUB_TAG .. "_GameLogger_Local",
     ResetOnSpawn = false,
     IgnoreGuiInset = true,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -328,6 +340,63 @@ if not parented then
 end
 if type(protectgui) == "function" then pcall(protectgui, gui) end
 
+-- notifications
+local notifContainer = instance("Frame", {
+    Name = "NotifContainer",
+    Size = UDim2.new(0, 300, 0, 300),
+    Position = UDim2.new(1, -320, 0, 20),
+    BackgroundTransparency = 1,
+    ZIndex = 300,
+}, gui)
+instance("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Top,
+    Parent = notifContainer,
+})
+
+local function notify(text, color)
+    if not state.notificationsEnabled or not state.alive then return end
+    local notif = round(instance("Frame", {
+        Size = UDim2.new(1, 0, 0, 40),
+        BackgroundColor3 = COLORS.surface,
+        BorderSizePixel = 0,
+        ZIndex = 301,
+    }, notifContainer), 8)
+    outline(notif, color or COLORS.accent)
+    local accentBar = instance("Frame", {
+        Size = UDim2.new(0, 3, 1, -12),
+        Position = UDim2.new(0, 6, 0, 6),
+        BackgroundColor3 = color or COLORS.accent,
+        BorderSizePixel = 0,
+        ZIndex = 302,
+        Parent = notif,
+    })
+    round(accentBar, 2)
+    local lbl = textLabel(notif, text, 12)
+    lbl.Position = UDim2.fromOffset(18, 0)
+    lbl.Size = UDim2.new(1, -28, 1, 0)
+    lbl.ZIndex = 302
+    task.delay(3, function()
+        if notif and notif.Parent then
+            TweenService:Create(notif, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+            task.delay(0.3, function() if notif and notif.Parent then notif:Destroy() end end)
+        end
+    end)
+end
+
+local function copyToClipboard(content)
+    for _, fnName in ipairs({"setclipboard", "toclipboard"}) do
+        local fn = ENV[fnName] or _G[fnName]
+        if type(fn) == "function" then
+            local ok = pcall(fn, content)
+            if ok then return true end
+        end
+    end
+    return false
+end
+
+-- main window
 local main = round(instance("Frame", {
     Name = "RecorderWindow",
     AnchorPoint = Vector2.new(0.5, 0.5),
@@ -348,27 +417,61 @@ local topbar = instance("Frame", {
     Active = true,
 }, main)
 round(topbar, 11)
-local title = textLabel(topbar, "MORANTXHUB  /  GAME LOGGER", 17)
+
+local headerGradient = instance("Frame", {
+    Size = UDim2.new(1, 0, 0, 2),
+    BackgroundColor3 = COLORS.accent,
+    BorderSizePixel = 0,
+    Parent = topbar,
+})
+instance("UIGradient", {
+    Color = ColorSequence.new(COLORS.accent, COLORS.accent2),
+    Parent = headerGradient,
+})
+
+local title = textLabel(topbar, HUB_NAME .. "  /  GAME LOGGER", 17)
 title.Font = Enum.Font.GothamBold
+title.TextColor3 = COLORS.accent
 title.Position = UDim2.fromOffset(17, 7)
-title.Size = UDim2.new(1, -130, 0, 24)
+title.Size = UDim2.new(1, -160, 0, 24)
 local subtitle = textLabel(topbar, "Client event capture  |  F8: show / hide", 11, COLORS.muted)
 subtitle.Position = UDim2.fromOffset(18, 32)
-subtitle.Size = UDim2.new(1, -130, 0, 15)
+subtitle.Size = UDim2.new(1, -160, 0, 15)
 
-local minimizeButton = button(topbar, "_", UDim2.new(1, -82, 0, 11), UDim2.fromOffset(30, 30))
+local minimizeButton = button(topbar, "_", UDim2.new(1, -130, 0, 11), UDim2.fromOffset(30, 30))
 minimizeButton.TextSize = 19
-local closeButton = button(topbar, "X", UDim2.new(1, -45, 0, 11), UDim2.fromOffset(30, 30), COLORS.red)
+local dockButton = button(topbar, "⇌", UDim2.new(1, -95, 0, 11), UDim2.fromOffset(30, 30))
+dockButton.TextSize = 14
+local closeButton = button(topbar, "X", UDim2.new(1, -60, 0, 11), UDim2.fromOffset(30, 30), COLORS.red)
 closeButton.TextSize = 14
-local compactButton = button(gui, "LOG", UDim2.new(1, -14, 0.5, 0),
-    UDim2.fromOffset(58, 58), COLORS.accent)
-compactButton.AnchorPoint = Vector2.new(1, 0.5)
-compactButton.TextSize = 14
-compactButton.Visible = false
-compactButton.Active = true
-compactButton.TextColor3 = COLORS.background
-compactButton.Font = Enum.Font.GothamBold
 
+local dockHint = textLabel(topbar, "", 10, COLORS.muted)
+dockHint.Position = UDim2.new(1, -320, 0, 40)
+dockHint.Size = UDim2.fromOffset(120, 12)
+
+local compactButton = round(instance("TextButton", {
+    Name = "CompactPill",
+    Size = UDim2.fromOffset(150, 42),
+    Position = UDim2.new(1, -160, 0.5, 0),
+    BackgroundColor3 = COLORS.accent,
+    Text = "",
+    AutoButtonColor = false,
+    Visible = false,
+    Active = true,
+    BorderSizePixel = 0,
+    ZIndex = 100,
+}, gui), 21)
+outline(compactButton, COLORS.accent2)
+local compactIcon = textLabel(compactButton, "◈", 20, COLORS.background)
+compactIcon.Font = Enum.Font.GothamBold
+compactIcon.Position = UDim2.fromOffset(10, 0)
+compactIcon.Size = UDim2.fromOffset(28, 42)
+local compactLabel = textLabel(compactButton, HUB_NAME .. " · LOG", 12, COLORS.background)
+compactLabel.Font = Enum.Font.GothamBold
+compactLabel.Position = UDim2.fromOffset(40, 0)
+compactLabel.Size = UDim2.new(1, -50, 1, 0)
+
+-- stats panel
 local statsPanel = round(instance("Frame", {
     Position = UDim2.fromOffset(14, 67), Size = UDim2.new(1, -28, 0, 65),
     BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
@@ -381,26 +484,34 @@ local statsBottom = textLabel(statsPanel, "", 11, COLORS.muted)
 statsBottom.Position = UDim2.fromOffset(12, 32)
 statsBottom.Size = UDim2.new(1, -24, 0, 22)
 
+-- tools bar
 local tools = instance("Frame", {
     Position = UDim2.fromOffset(14, 143), Size = UDim2.new(1, -28, 0, 34),
     BackgroundTransparency = 1,
 }, main)
-local copyButton = button(tools, "COPY ALL", UDim2.fromOffset(0, 0), UDim2.fromOffset(100, 34), COLORS.accent)
+local copyButton = button(tools, "COPY", UDim2.fromOffset(0, 0), UDim2.fromOffset(58, 34), COLORS.accent)
 copyButton.TextColor3 = COLORS.background
 copyButton.Font = Enum.Font.GothamBold
-local saveButton = button(tools, "SAVE TXT", UDim2.fromOffset(105, 0), UDim2.fromOffset(90, 34), COLORS.green)
+local saveButton = button(tools, "SAVE", UDim2.fromOffset(63, 0), UDim2.fromOffset(58, 34), COLORS.green)
 saveButton.TextColor3 = COLORS.background
 saveButton.Font = Enum.Font.GothamBold
-local clearButton = button(tools, "CLEAR", UDim2.fromOffset(200, 0), UDim2.fromOffset(70, 34))
-local pauseButton = button(tools, "PAUSE", UDim2.fromOffset(275, 0), UDim2.fromOffset(70, 34))
-local dumpButton = button(tools, "DUMP REMOTES", UDim2.fromOffset(350, 0), UDim2.fromOffset(110, 34), COLORS.elevated)
+local clearButton = button(tools, "CLR", UDim2.fromOffset(126, 0), UDim2.fromOffset(48, 34))
+local pauseButton = button(tools, "PAUSE", UDim2.fromOffset(179, 0), UDim2.fromOffset(60, 34))
+local dumpButton = button(tools, "DUMP", UDim2.fromOffset(244, 0), UDim2.fromOffset(58, 34), COLORS.elevated)
 dumpButton.TextColor3 = COLORS.accent
 dumpButton.Font = Enum.Font.GothamBold
-local playAllButton = button(tools, "PLAY ALL", UDim2.fromOffset(465, 0), UDim2.fromOffset(80, 34), COLORS.red)
+local playAllButton = button(tools, "PLAY ALL", UDim2.fromOffset(307, 0), UDim2.fromOffset(72, 34), COLORS.red)
 playAllButton.TextColor3 = COLORS.background
 playAllButton.Font = Enum.Font.GothamBold
-local filterButton = button(tools, "FILTER: ALL", UDim2.fromOffset(550, 0), UDim2.new(1, -550, 0, 34))
+local decalButton = button(tools, "DECALS", UDim2.fromOffset(384, 0), UDim2.fromOffset(62, 34), COLORS.pink)
+decalButton.TextColor3 = COLORS.background
+decalButton.Font = Enum.Font.GothamBold
+local modelButton = button(tools, "MODELS", UDim2.fromOffset(451, 0), UDim2.fromOffset(62, 34), COLORS.cyan)
+modelButton.TextColor3 = COLORS.background
+modelButton.Font = Enum.Font.GothamBold
+local filterButton = button(tools, "ALL", UDim2.fromOffset(518, 0), UDim2.new(1, -518, 0, 34))
 
+-- toggles
 local toggles = instance("Frame", {
     Position = UDim2.fromOffset(14, 184), Size = UDim2.new(1, -28, 0, 66),
     BackgroundTransparency = 1,
@@ -420,6 +531,7 @@ for i, pair in ipairs(toggleDefinitions) do
     toggleButtons[key] = b
 end
 
+-- log viewport
 local viewport = round(instance("ScrollingFrame", {
     Name = "LogScroller",
     Position = UDim2.fromOffset(14, 257),
@@ -453,12 +565,17 @@ footer.Position = UDim2.fromOffset(18, 484)
 footer.Size = UDim2.new(1, -36, 0, 33)
 
 -- ============================================================
--- REMOTE DUMP / PLAYER PANEL
+-- DUMP PANEL
 -- ============================================================
-
 local remoteCache = {}
-local remotePanel = round(instance("Frame", {
-    Name = "RemotePanel",
+local decalCache = {}
+local modelCache = {}
+local assetCache = {Sounds = {}, Animations = {}, Particles = {}, Tools = {}}
+local dumpTab = "REMOTES"
+local searchQuery = ""
+
+local dumpPanel = round(instance("Frame", {
+    Name = "DumpPanel",
     Visible = false,
     Position = UDim2.new(0, 15, 0, 60),
     Size = UDim2.new(1, -30, 1, -75),
@@ -466,42 +583,87 @@ local remotePanel = round(instance("Frame", {
     BorderSizePixel = 0,
     ZIndex = 25,
 }, main), 8)
-outline(remotePanel)
+outline(dumpPanel)
 
-local remoteHeader = textLabel(remotePanel, "REMOTE DUMP — 0 remotes", 14)
-remoteHeader.Font = Enum.Font.GothamBold
-remoteHeader.Position = UDim2.fromOffset(12, 10)
-remoteHeader.Size = UDim2.new(1, -240, 0, 22)
-remoteHeader.ZIndex = 26
+local dumpHeader = textLabel(dumpPanel, "DUMP PANEL", 14)
+dumpHeader.Font = Enum.Font.GothamBold
+dumpHeader.Position = UDim2.fromOffset(12, 10)
+dumpHeader.Size = UDim2.new(1, -280, 0, 22)
+dumpHeader.ZIndex = 26
 
-local remoteBack = button(remotePanel, "BACK", UDim2.new(1, -78, 0, 8), UDim2.fromOffset(66, 28))
-remoteBack.ZIndex = 26
+local tabBar = instance("Frame", {
+    Position = UDim2.fromOffset(12, 38),
+    Size = UDim2.new(1, -24, 0, 26),
+    BackgroundTransparency = 1,
+    ZIndex = 26,
+}, dumpPanel)
+instance("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 6),
+    Parent = tabBar,
+})
 
-local remoteRefresh = button(remotePanel, "RESCAN", UDim2.new(1, -150, 0, 8), UDim2.fromOffset(66, 28))
-remoteRefresh.ZIndex = 26
+local function makeDumpTab(name, label, color)
+    local t = button(tabBar, label, UDim2.fromOffset(0, 0), UDim2.fromOffset(78, 26), COLORS.elevated)
+    t.TextSize = 11
+    t.Font = Enum.Font.GothamBold
+    t.ZIndex = 27
+    if name == dumpTab then
+        t.BackgroundColor3 = color or COLORS.accent
+        t.TextColor3 = COLORS.background
+    end
+    return t
+end
 
-local remoteExport = button(remotePanel, "EXPORT", UDim2.new(1, -222, 0, 8), UDim2.fromOffset(66, 28), COLORS.accent)
-remoteExport.TextColor3 = COLORS.background
-remoteExport.ZIndex = 26
+local remotesTab = makeDumpTab("REMOTES", "REMOTES", COLORS.accent)
+local decalsTab = makeDumpTab("DECALS", "DECALS", COLORS.pink)
+local modelsTab = makeDumpTab("MODELS", "MODELS", COLORS.cyan)
+local assetsTab = makeDumpTab("ASSETS", "ASSETS", COLORS.green)
 
-local remotePlayAll = button(remotePanel, "PLAY ALL (no args)", UDim2.new(0, 12, 0, 40), UDim2.fromOffset(160, 28), COLORS.red)
-remotePlayAll.TextColor3 = COLORS.background
-remotePlayAll.Font = Enum.Font.GothamBold
-remotePlayAll.ZIndex = 26
+local searchBox = instance("TextBox", {
+    Position = UDim2.fromOffset(12, 70),
+    Size = UDim2.new(1, -220, 0, 26),
+    PlaceholderText = "search by name or path...",
+    Text = "",
+    ClearTextOnFocus = false,
+    BackgroundColor3 = COLORS.background,
+    TextColor3 = COLORS.foreground,
+    PlaceholderColor3 = COLORS.muted,
+    Font = Enum.Font.Gotham,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 26,
+}, dumpPanel)
+round(searchBox, 6)
 
-local remotePlayAllArgs = button(remotePanel, "PLAY ALL (last args)", UDim2.new(0, 178, 0, 40), UDim2.fromOffset(160, 28), COLORS.green)
-remotePlayAllArgs.TextColor3 = COLORS.background
-remotePlayAllArgs.Font = Enum.Font.GothamBold
-remotePlayAllArgs.ZIndex = 26
+local backButton = button(dumpPanel, "BACK", UDim2.new(1, -78, 0, 8), UDim2.fromOffset(66, 28))
+backButton.ZIndex = 26
+local rescanButton = button(dumpPanel, "RESCAN", UDim2.new(1, -150, 0, 8), UDim2.fromOffset(66, 28))
+rescanButton.ZIndex = 26
+local exportButton = button(dumpPanel, "EXPORT", UDim2.new(1, -222, 0, 8), UDim2.fromOffset(66, 28), COLORS.accent)
+exportButton.TextColor3 = COLORS.background
+exportButton.ZIndex = 26
 
-local remoteStatus = textLabel(remotePanel, "Ready.", 11, COLORS.muted)
-remoteStatus.Position = UDim2.new(0, 348, 0, 44)
-remoteStatus.Size = UDim2.new(1, -360, 0, 20)
-remoteStatus.ZIndex = 26
+local playAllRemote = button(dumpPanel, "PLAY ALL (no args)", UDim2.new(0, 12, 0, 104), UDim2.fromOffset(150, 26), COLORS.red)
+playAllRemote.TextColor3 = COLORS.background
+playAllRemote.Font = Enum.Font.GothamBold
+playAllRemote.TextSize = 11
+playAllRemote.ZIndex = 26
 
-local remoteList = round(instance("ScrollingFrame", {
-    Position = UDim2.fromOffset(11, 76),
-    Size = UDim2.new(1, -22, 1, -88),
+local playAllArgsRemote = button(dumpPanel, "PLAY ALL (last args)", UDim2.new(0, 168, 0, 104), UDim2.fromOffset(150, 26), COLORS.green)
+playAllArgsRemote.TextColor3 = COLORS.background
+playAllArgsRemote.Font = Enum.Font.GothamBold
+playAllArgsRemote.TextSize = 11
+playAllArgsRemote.ZIndex = 26
+
+local dumpStatus = textLabel(dumpPanel, "Ready.", 11, COLORS.muted)
+dumpStatus.Position = UDim2.new(0, 330, 0, 108)
+dumpStatus.Size = UDim2.new(1, -340, 0, 20)
+dumpStatus.ZIndex = 26
+
+local dumpList = round(instance("ScrollingFrame", {
+    Position = UDim2.fromOffset(11, 138),
+    Size = UDim2.new(1, -22, 1, -150),
     BackgroundColor3 = COLORS.background,
     BorderSizePixel = 0,
     ScrollBarThickness = 5,
@@ -509,17 +671,18 @@ local remoteList = round(instance("ScrollingFrame", {
     ScrollingDirection = Enum.ScrollingDirection.Y,
     AutomaticCanvasSize = Enum.AutomaticSize.Y,
     CanvasSize = UDim2.new(),
-}, remotePanel), 6)
-remoteList.ZIndex = 26
+}, dumpPanel), 6)
+dumpList.ZIndex = 26
+
+-- ============================================================
+-- SCANNERS
+-- ============================================================
 
 local function scanRemotes()
     remoteCache = {}
     local seen = {}
     local roots = {
-        ReplicatedStorage,
-        Workspace,
-        PlayerGui,
-        LocalPlayer,
+        ReplicatedStorage, Workspace, PlayerGui, LocalPlayer,
         game:GetService("ServerScriptService"),
         game:GetService("StarterGui"),
         game:GetService("StarterPlayer"),
@@ -548,8 +711,8 @@ local function scanRemotes()
 end
 
 local function hookRemoteArgs(remote)
-    if remote:GetAttribute("__MorantxHooked") then return end
-    pcall(function() remote:SetAttribute("__MorantxHooked", true) end)
+    if remote:GetAttribute("__VMHook") then return end
+    pcall(function() remote:SetAttribute("__VMHook", true) end)
     if remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent") then
         bind(remote.OnClientEvent, function(...)
             local argc = select("#", ...)
@@ -576,177 +739,612 @@ local function argsPreview(args, argc)
     return "(" .. table.concat(pieces, ", ") .. ")"
 end
 
-local function renderRemoteList()
-    for _, child in ipairs(remoteList:GetChildren()) do
+local function scanDecals()
+    decalCache = {}
+    local seen = {}
+    local roots = {Workspace, ReplicatedStorage, PlayerGui, LocalPlayer}
+    for _, root in ipairs(roots) do
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if ok and list then
+            for _, obj in ipairs(list) do
+                if seen[obj] then continue end
+                if obj:IsA("Decal") or obj:IsA("Texture") then
+                    seen[obj] = true
+                    table.insert(decalCache, {
+                        object = obj, name = obj.Name, kind = obj.ClassName,
+                        texture = obj.Texture, path = instancePath(obj),
+                    })
+                elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
+                    seen[obj] = true
+                    table.insert(decalCache, {
+                        object = obj, name = obj.Name, kind = obj.ClassName,
+                        texture = obj.Image, path = instancePath(obj),
+                    })
+                end
+            end
+        end
+    end
+    table.sort(decalCache, function(a, b) return a.path < b.path end)
+    return #decalCache
+end
+
+local function scanModels()
+    modelCache = {}
+    local seen = {}
+    local roots = {Workspace, ReplicatedStorage, PlayerGui, LocalPlayer}
+    local visited = 0
+    for _, root in ipairs(roots) do
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if ok and list then
+            for _, obj in ipairs(list) do
+                if visited >= MAX_MODEL_SCAN then break end
+                visited = visited + 1
+                if seen[obj] then continue end
+                if obj:IsA("Model") or obj:IsA("Tool") or obj:IsA("MeshPart") or obj:IsA("SpecialMesh") or obj:IsA("Accessory") then
+                    seen[obj] = true
+                    local path = instancePath(obj)
+                    local childCount = #obj:GetChildren()
+                    local partCount = 0
+                    local meshId = ""
+                    local textureId = ""
+                    local primaryName = ""
+                    if obj:IsA("Model") or obj:IsA("Tool") or obj:IsA("Accessory") then
+                        for _, p in ipairs(obj:GetChildren()) do
+                            if p:IsA("BasePart") then partCount = partCount + 1 end
+                        end
+                        local pp = obj.PrimaryPart
+                        if pp then primaryName = pp.Name end
+                        local mesh = obj:FindFirstChildWhichIsA("MeshPart", true)
+                        if mesh then
+                            if mesh.MeshId ~= "" then meshId = mesh.MeshId end
+                            if mesh.TextureID ~= "" then textureId = mesh.TextureID end
+                        end
+                        local handle = obj:FindFirstChild("Handle")
+                        if handle and handle:IsA("BasePart") then
+                            local sm = handle:FindFirstChildOfClass("SpecialMesh")
+                            if sm and sm.MeshId ~= "" then meshId = sm.MeshId end
+                            if handle:IsA("MeshPart") then
+                                if handle.MeshId ~= "" then meshId = handle.MeshId end
+                                if handle.TextureID ~= "" then textureId = handle.TextureID end
+                            end
+                        end
+                    elseif obj:IsA("MeshPart") then
+                        meshId = obj.MeshId
+                        textureId = obj.TextureID
+                        partCount = 1
+                        primaryName = obj.Name
+                    elseif obj:IsA("SpecialMesh") then
+                        meshId = obj.MeshId
+                        textureId = obj.TextureId or ""
+                    end
+                    table.insert(modelCache, {
+                        object = obj, name = obj.Name, kind = obj.ClassName,
+                        path = path, childCount = childCount, partCount = partCount,
+                        meshId = meshId, textureId = textureId, primaryName = primaryName,
+                    })
+                end
+            end
+        end
+    end
+    table.sort(modelCache, function(a, b) return a.path < b.path end)
+    return #modelCache
+end
+
+local function scanAssets()
+    assetCache = {Sounds = {}, Animations = {}, Particles = {}, Tools = {}}
+    local roots = {Workspace, ReplicatedStorage, SoundService, PlayerGui, LocalPlayer}
+    for _, root in ipairs(roots) do
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if ok and list then
+            for _, obj in ipairs(list) do
+                if obj:IsA("Sound") and obj.SoundId ~= "" then
+                    table.insert(assetCache.Sounds, {name = obj.Name, id = obj.SoundId, path = instancePath(obj)})
+                elseif obj:IsA("Animation") and obj.AnimationId ~= "" then
+                    table.insert(assetCache.Animations, {name = obj.Name, id = obj.AnimationId, path = instancePath(obj)})
+                elseif obj:IsA("ParticleEmitter") then
+                    table.insert(assetCache.Particles, {name = obj.Name, id = obj.Texture or "", path = instancePath(obj)})
+                elseif obj:IsA("Tool") then
+                    table.insert(assetCache.Tools, {name = obj.Name, path = instancePath(obj)})
+                end
+            end
+        end
+    end
+    return assetCache
+end
+
+-- ============================================================
+-- RENDERERS
+-- ============================================================
+local function matchSearch(name, path)
+    if searchQuery == "" then return true end
+    local q = searchQuery:lower()
+    return name:lower():find(q, 1, true) or path:lower():find(q, 1, true)
+end
+
+local function clearList()
+    for _, child in ipairs(dumpList:GetChildren()) do
         if child:IsA("GuiObject") then child:Destroy() end
     end
-    remoteHeader.Text = "REMOTE DUMP — " .. #remoteCache .. " remote(s)"
+end
 
-    if #remoteCache == 0 then
-        local empty = textLabel(remoteList, "No remotes found. Try RESCAN.", 12, COLORS.muted)
+local function renderRemotes()
+    clearList()
+    local shown = 0
+    for _, entry in ipairs(remoteCache) do
+        if matchSearch(entry.name, entry.path) then shown = shown + 1 end
+    end
+    dumpHeader.Text = "REMOTES — " .. shown .. " / " .. #remoteCache
+    if shown == 0 then
+        local empty = textLabel(dumpList, "No remotes match.", 12, COLORS.muted)
         empty.Position = UDim2.fromOffset(10, 10)
         return
     end
-
-    local rowHeight = 34
-    for i, entry in ipairs(remoteCache) do
+    local i = 0
+    for _, entry in ipairs(remoteCache) do
+        if not matchSearch(entry.name, entry.path) then continue end
+        i = i + 1
+        local rowHeight = 34
         local row = round(instance("Frame", {
             Position = UDim2.fromOffset(4, (i - 1) * (rowHeight + 4) + 4),
             Size = UDim2.new(1, -14, 0, rowHeight),
             BackgroundColor3 = COLORS.surface,
             BorderSizePixel = 0,
             ZIndex = 26,
-        }, remoteList), 6)
+        }, dumpList), 6)
         outline(row)
-
         local kindColor = entry.kind == "RemoteFunction" and COLORS.accent or COLORS.green
         local kindLabel = textLabel(row, entry.kind == "RemoteFunction" and "RF" or "RE", 10, kindColor)
         kindLabel.Font = Enum.Font.GothamBold
         kindLabel.Position = UDim2.fromOffset(8, 0)
         kindLabel.Size = UDim2.fromOffset(30, rowHeight)
-
         local nameLabel = textLabel(row, entry.name, 12)
         nameLabel.Font = Enum.Font.GothamBold
         nameLabel.Position = UDim2.fromOffset(40, 2)
         nameLabel.Size = UDim2.new(1, -220, 0, 15)
-
         local pathLabel = textLabel(row, entry.path, 10, COLORS.muted)
         pathLabel.Position = UDim2.fromOffset(40, 17)
         pathLabel.Size = UDim2.new(1, -220, 0, 14)
-
-        local argsLabel = textLabel(row, entry.lastArgs and argsPreview(entry.lastArgs, entry.argCount) or "(no args seen yet)", 10, COLORS.muted)
+        local argsLabel = textLabel(row, entry.lastArgs and argsPreview(entry.lastArgs, entry.argCount) or "(no args seen)", 10, COLORS.muted)
         argsLabel.Position = UDim2.new(1, -175, 0, 2)
         argsLabel.Size = UDim2.fromOffset(120, 15)
-
         local fireBtn = button(row, "FIRE", UDim2.new(1, -95, 0.5, -12), UDim2.fromOffset(44, 24), COLORS.accent)
         fireBtn.TextColor3 = COLORS.background
         fireBtn.TextSize = 11
         fireBtn.ZIndex = 27
-
         local fireArgsBtn = button(row, "ARGS", UDim2.new(1, -48, 0.5, -12), UDim2.fromOffset(44, 24), COLORS.green)
         fireArgsBtn.TextColor3 = COLORS.background
         fireArgsBtn.TextSize = 11
         fireArgsBtn.ZIndex = 27
-
         bind(fireBtn.Activated, function()
             if not (entry.remote and entry.remote.Parent) then
-                remoteStatus.Text = "Remote gone: " .. entry.name
+                dumpStatus.Text = "Remote gone: " .. entry.name
                 return
             end
             local ok = pcall(function()
-                if entry.kind == "RemoteFunction" then
-                    entry.remote:InvokeServer()
-                else
-                    entry.remote:FireServer()
-                end
+                if entry.kind == "RemoteFunction" then entry.remote:InvokeServer()
+                else entry.remote:FireServer() end
             end)
             if ok then
-                remoteStatus.Text = "Fired " .. entry.name .. " (no args)"
+                dumpStatus.Text = "Fired " .. entry.name
                 addEntry("REMOTE", "MANUAL_FIRE name=" .. quoteString(entry.name) .. " path=" .. entry.path .. " args=()")
+                notify("Fired " .. entry.name, COLORS.accent)
             else
-                remoteStatus.Text = "Fire failed: " .. entry.name
+                dumpStatus.Text = "Fire failed: " .. entry.name
             end
         end)
-
         bind(fireArgsBtn.Activated, function()
             if not (entry.remote and entry.remote.Parent) then
-                remoteStatus.Text = "Remote gone: " .. entry.name
+                dumpStatus.Text = "Remote gone: " .. entry.name
                 return
             end
             if not entry.lastArgs then
-                remoteStatus.Text = "No args recorded for " .. entry.name
+                dumpStatus.Text = "No args for " .. entry.name
                 return
             end
             local ok = pcall(function()
-                if entry.kind == "RemoteFunction" then
-                    entry.remote:InvokeServer(table.unpack(entry.lastArgs))
-                else
-                    entry.remote:FireServer(table.unpack(entry.lastArgs))
-                end
+                if entry.kind == "RemoteFunction" then entry.remote:InvokeServer(table.unpack(entry.lastArgs))
+                else entry.remote:FireServer(table.unpack(entry.lastArgs)) end
             end)
             if ok then
-                remoteStatus.Text = "Fired " .. entry.name .. " with " .. tostring(#entry.lastArgs) .. " arg(s)"
+                dumpStatus.Text = "Fired " .. entry.name .. " with args"
                 addEntry("REMOTE", "MANUAL_FIRE name=" .. quoteString(entry.name) .. " path=" .. entry.path .. " args=" .. argsPreview(entry.lastArgs, #entry.lastArgs))
+                notify("Fired " .. entry.name .. " (args)", COLORS.green)
             else
-                remoteStatus.Text = "Fire ARGS failed: " .. entry.name
+                dumpStatus.Text = "Fire ARGS failed: " .. entry.name
             end
         end)
     end
 end
 
+local function renderDecals()
+    clearList()
+    local shown = 0
+    for _, entry in ipairs(decalCache) do
+        if matchSearch(entry.name, entry.path) then shown = shown + 1 end
+    end
+    dumpHeader.Text = "DECALS — " .. shown .. " / " .. #decalCache
+    if shown == 0 then
+        local empty = textLabel(dumpList, "No decals match.", 12, COLORS.muted)
+        empty.Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, entry in ipairs(decalCache) do
+        if not matchSearch(entry.name, entry.path) then continue end
+        i = i + 1
+        local rowHeight = 34
+        local row = round(instance("Frame", {
+            Position = UDim2.fromOffset(4, (i - 1) * (rowHeight + 4) + 4),
+            Size = UDim2.new(1, -14, 0, rowHeight),
+            BackgroundColor3 = COLORS.surface,
+            BorderSizePixel = 0,
+            ZIndex = 26,
+        }, dumpList), 6)
+        outline(row)
+        local preview = instance("ImageLabel", {
+            Position = UDim2.fromOffset(8, 4),
+            Size = UDim2.fromOffset(26, 26),
+            BackgroundColor3 = COLORS.elevated,
+            Image = entry.texture ~= "" and entry.texture or "",
+            BackgroundTransparency = 0.2,
+            ZIndex = 27,
+            Parent = row,
+        })
+        round(preview, 4)
+        local nameLabel = textLabel(row, entry.name .. "  [" .. entry.kind .. "]", 12)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.Position = UDim2.fromOffset(44, 2)
+        nameLabel.Size = UDim2.new(1, -160, 0, 15)
+        local pathLabel = textLabel(row, entry.path .. "  →  " .. (entry.texture ~= "" and entry.texture or "(empty)"), 10, COLORS.muted)
+        pathLabel.Position = UDim2.fromOffset(44, 17)
+        pathLabel.Size = UDim2.new(1, -120, 0, 14)
+        local copyBtn = button(row, "COPY ID", UDim2.new(1, -85, 0.5, -12), UDim2.fromOffset(72, 24), COLORS.pink)
+        copyBtn.TextColor3 = COLORS.background
+        copyBtn.TextSize = 10
+        copyBtn.Font = Enum.Font.GothamBold
+        copyBtn.ZIndex = 27
+        bind(copyBtn.Activated, function()
+            local txt = entry.texture ~= "" and entry.texture or "(empty)"
+            if copyToClipboard(txt) then
+                dumpStatus.Text = "Copied: " .. txt
+                notify("Copied decal ID", COLORS.pink)
+            else
+                dumpStatus.Text = "Clipboard failed"
+            end
+        end)
+    end
+end
+
+local function renderModels()
+    clearList()
+    local shown = 0
+    for _, entry in ipairs(modelCache) do
+        if matchSearch(entry.name, entry.path) then shown = shown + 1 end
+    end
+    dumpHeader.Text = "MODELS — " .. shown .. " / " .. #modelCache
+    if shown == 0 then
+        local empty = textLabel(dumpList, "No models match.", 12, COLORS.muted)
+        empty.Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, entry in ipairs(modelCache) do
+        if not matchSearch(entry.name, entry.path) then continue end
+        i = i + 1
+        local rowHeight = 42
+        local row = round(instance("Frame", {
+            Position = UDim2.fromOffset(4, (i - 1) * (rowHeight + 4) + 4),
+            Size = UDim2.new(1, -14, 0, rowHeight),
+            BackgroundColor3 = COLORS.surface,
+            BorderSizePixel = 0,
+            ZIndex = 26,
+        }, dumpList), 6)
+        outline(row)
+
+        local kindColor = (entry.kind == "Tool" and COLORS.pink) or
+            (entry.kind == "MeshPart" and COLORS.cyan) or
+            (entry.kind == "SpecialMesh" and COLORS.orange) or
+            (entry.kind == "Accessory" and COLORS.green) or COLORS.accent
+        local kindLabel = textLabel(row, entry.kind:sub(1, 4):upper(), 9, kindColor)
+        kindLabel.Font = Enum.Font.GothamBold
+        kindLabel.Position = UDim2.fromOffset(6, 0)
+        kindLabel.Size = UDim2.fromOffset(36, rowHeight)
+
+        local nameLabel = textLabel(row, entry.name, 12)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.Position = UDim2.fromOffset(46, 3)
+        nameLabel.Size = UDim2.new(1, -160, 0, 15)
+
+        local statsText = ""
+        if entry.partCount > 0 then statsText = entry.partCount .. " part(s)" end
+        if entry.childCount > 0 then
+            statsText = statsText .. (statsText ~= "" and " · " or "") .. entry.childCount .. " child(ren)"
+        end
+        if entry.primaryName ~= "" then
+            statsText = statsText .. (statsText ~= "" and " · " or "") .. "primary: " .. entry.primaryName
+        end
+        if statsText == "" then statsText = "(no parts)" end
+        local statsLabel = textLabel(row, statsText, 10, COLORS.muted)
+        statsLabel.Position = UDim2.fromOffset(46, 20)
+        statsLabel.Size = UDim2.new(1, -160, 0, 14)
+
+        local pathLabel = textLabel(row, entry.path, 9, COLORS.muted)
+        pathLabel.Position = UDim2.fromOffset(46, 32)
+        pathLabel.Size = UDim2.new(1, -160, 0, 10)
+
+        if entry.meshId ~= "" then
+            local meshLabel = textLabel(row, "mesh: " .. entry.meshId, 9, COLORS.cyan)
+            meshLabel.Position = UDim2.new(1, -158, 0, 3)
+            meshLabel.Size = UDim2.fromOffset(112, 12)
+        end
+
+        local copyNameBtn = button(row, "NAME", UDim2.new(1, -95, 0, 3), UDim2.fromOffset(42, 18), COLORS.accent)
+        copyNameBtn.TextColor3 = COLORS.background
+        copyNameBtn.TextSize = 9
+        copyNameBtn.Font = Enum.Font.GothamBold
+        copyNameBtn.ZIndex = 27
+
+        local copyPathBtn = button(row, "PATH", UDim2.new(1, -50, 0, 3), UDim2.fromOffset(42, 18), COLORS.green)
+        copyPathBtn.TextColor3 = COLORS.background
+        copyPathBtn.TextSize = 9
+        copyPathBtn.Font = Enum.Font.GothamBold
+        copyPathBtn.ZIndex = 27
+
+        local copyMeshBtn = button(row, "MESH", UDim2.new(1, -95, 0, 21), UDim2.fromOffset(42, 18), COLORS.cyan)
+        copyMeshBtn.TextColor3 = COLORS.background
+        copyMeshBtn.TextSize = 9
+        copyMeshBtn.Font = Enum.Font.GothamBold
+        copyMeshBtn.ZIndex = 27
+        if entry.meshId == "" then
+            copyMeshBtn.BackgroundColor3 = COLORS.elevated
+            copyMeshBtn.TextColor3 = COLORS.muted
+        end
+
+        local copyAllBtn = button(row, "ALL", UDim2.new(1, -50, 0, 21), UDim2.fromOffset(42, 18), COLORS.orange)
+        copyAllBtn.TextColor3 = COLORS.background
+        copyAllBtn.TextSize = 9
+        copyAllBtn.Font = Enum.Font.GothamBold
+        copyAllBtn.ZIndex = 27
+
+        bind(copyNameBtn.Activated, function()
+            if copyToClipboard(entry.name) then
+                dumpStatus.Text = "Copied: " .. entry.name
+                notify("Name copied", COLORS.accent)
+            end
+        end)
+        bind(copyPathBtn.Activated, function()
+            if copyToClipboard(entry.path) then
+                dumpStatus.Text = "Copied path"
+                notify("Path copied", COLORS.green)
+            end
+        end)
+        bind(copyMeshBtn.Activated, function()
+            if entry.meshId == "" then
+                dumpStatus.Text = "No mesh ID"
+                return
+            end
+            if copyToClipboard(entry.meshId) then
+                dumpStatus.Text = "Copied mesh ID"
+                notify("Mesh ID copied", COLORS.cyan)
+            end
+        end)
+        bind(copyAllBtn.Activated, function()
+            local payload = table.concat({
+                "name: " .. entry.name,
+                "kind: " .. entry.kind,
+                "path: " .. entry.path,
+                entry.meshId ~= "" and ("meshId: " .. entry.meshId) or nil,
+                entry.textureId ~= "" and ("textureId: " .. entry.textureId) or nil,
+                "parts: " .. tostring(entry.partCount),
+                "children: " .. tostring(entry.childCount),
+            }, "\n")
+            if copyToClipboard(payload) then
+                dumpStatus.Text = "Copied full info"
+                notify("Model info copied", COLORS.orange)
+            end
+        end)
+    end
+end
+
+local function renderAssets()
+    clearList()
+    local total = #assetCache.Sounds + #assetCache.Animations + #assetCache.Particles + #assetCache.Tools
+    dumpHeader.Text = "ASSETS — " .. total .. " total"
+    local y = 4
+    local function section(title, items, color)
+        if #items == 0 then return end
+        local hdr = textLabel(dumpList, title .. " (" .. #items .. ")", 12, color)
+        hdr.Font = Enum.Font.GothamBold
+        hdr.Position = UDim2.fromOffset(8, y)
+        hdr.Size = UDim2.new(1, -20, 0, 20)
+        hdr.ZIndex = 27
+        y = y + 22
+        for _, item in ipairs(items) do
+            if matchSearch(item.name, item.path) then
+                local rowHeight = 24
+                local row = round(instance("Frame", {
+                    Position = UDim2.fromOffset(8, y),
+                    Size = UDim2.new(1, -20, 0, rowHeight),
+                    BackgroundColor3 = COLORS.surface,
+                    BorderSizePixel = 0,
+                    ZIndex = 26,
+                }, dumpList), 4)
+                outline(row)
+                local label = item.id and (item.name .. "  —  " .. item.id) or item.name
+                local lbl = textLabel(row, label, 11)
+                lbl.Position = UDim2.fromOffset(8, 0)
+                lbl.Size = UDim2.new(1, -16, 1, 0)
+                lbl.ZIndex = 27
+                y = y + rowHeight + 3
+            end
+        end
+        y = y + 6
+    end
+    section("Sounds", assetCache.Sounds, COLORS.accent2)
+    section("Animations", assetCache.Animations, COLORS.orange)
+    section("Particles", assetCache.Particles, COLORS.pink)
+    section("Tools", assetCache.Tools, COLORS.green)
+    dumpList.CanvasSize = UDim2.fromOffset(0, y + 20)
+end
+
+local function renderDump()
+    if dumpTab == "REMOTES" then renderRemotes()
+    elseif dumpTab == "DECALS" then renderDecals()
+    elseif dumpTab == "MODELS" then renderModels()
+    else renderAssets() end
+end
+
+local function setDumpTab(name)
+    dumpTab = name
+    local tabs = {
+        {remotesTab, "REMOTES", COLORS.accent},
+        {decalsTab, "DECALS", COLORS.pink},
+        {modelsTab, "MODELS", COLORS.cyan},
+        {assetsTab, "ASSETS", COLORS.green},
+    }
+    for _, t in ipairs(tabs) do
+        local btn, tn, col = t[1], t[2], t[3]
+        if tn == name then
+            btn.BackgroundColor3 = col
+            btn.TextColor3 = COLORS.background
+        else
+            btn.BackgroundColor3 = COLORS.elevated
+            btn.TextColor3 = COLORS.foreground
+        end
+    end
+    playAllRemote.Visible = (name == "REMOTES")
+    playAllArgsRemote.Visible = (name == "REMOTES")
+    dumpStatus.Text = "Tab: " .. name
+    renderDump()
+end
+
+bind(remotesTab.Activated, function() setDumpTab("REMOTES") end)
+bind(decalsTab.Activated, function() setDumpTab("DECALS") end)
+bind(modelsTab.Activated, function() setDumpTab("MODELS") end)
+bind(assetsTab.Activated, function() setDumpTab("ASSETS") end)
+
+-- ============================================================
+-- DUMP BUTTON ACTIONS
+-- ============================================================
 bind(dumpButton.Activated, function()
     local count = scanRemotes()
     for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
-    renderRemoteList()
-    remotePanel.Visible = true
-    remoteStatus.Text = "Found " .. count .. " remote(s)."
+    setDumpTab("REMOTES")
+    dumpPanel.Visible = true
+    notify("Found " .. count .. " remotes", COLORS.accent)
     addEntry("SYSTEM", "REMOTE_DUMP found=" .. count)
 end)
 
-bind(remoteBack.Activated, function()
-    remotePanel.Visible = false
+bind(decalButton.Activated, function()
+    local count = scanDecals()
+    setDumpTab("DECALS")
+    dumpPanel.Visible = true
+    notify("Found " .. count .. " decals", COLORS.pink)
+    addEntry("SYSTEM", "DECAL_DUMP found=" .. count)
 end)
 
-bind(remoteRefresh.Activated, function()
-    local count = scanRemotes()
-    for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
-    renderRemoteList()
-    remoteStatus.Text = "Rescanned: " .. count .. " remote(s)"
-    addEntry("SYSTEM", "REMOTE_RESCAN found=" .. count)
+bind(modelButton.Activated, function()
+    local count = scanModels()
+    setDumpTab("MODELS")
+    dumpPanel.Visible = true
+    notify("Found " .. count .. " models", COLORS.cyan)
+    addEntry("SYSTEM", "MODEL_DUMP found=" .. count)
 end)
 
-bind(remoteExport.Activated, function()
+bind(backButton.Activated, function()
+    dumpPanel.Visible = false
+end)
+
+bind(rescanButton.Activated, function()
+    local count = 0
+    if dumpTab == "REMOTES" then
+        count = scanRemotes()
+        for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
+    elseif dumpTab == "DECALS" then
+        count = scanDecals()
+    elseif dumpTab == "MODELS" then
+        count = scanModels()
+    else
+        scanAssets()
+        count = #assetCache.Sounds + #assetCache.Animations + #assetCache.Particles + #assetCache.Tools
+    end
+    renderDump()
+    dumpStatus.Text = "Rescanned: " .. count
+    addEntry("SYSTEM", "RESCAN tab=" .. dumpTab .. " count=" .. count)
+end)
+
+bind(exportButton.Activated, function()
     local lines = {}
-    lines[#lines + 1] = "-- Remote dump exported by MorantxHub Game Logger"
+    lines[#lines + 1] = "-- " .. HUB_NAME .. " dump export"
     lines[#lines + 1] = "-- " .. os.date("%Y-%m-%d %H:%M:%S")
     lines[#lines + 1] = "-- Game: " .. tostring(game.Name)
     lines[#lines + 1] = "-- PlaceId: " .. tostring(game.PlaceId)
     lines[#lines + 1] = ""
-    for i, entry in ipairs(remoteCache) do
-        lines[#lines + 1] = string.format("[%d] %s  %s", i, entry.kind, entry.path)
-        if entry.lastArgs then
-            lines[#lines + 1] = "    last args: " .. argsPreview(entry.lastArgs, entry.argCount)
-        else
-            lines[#lines + 1] = "    last args: (none recorded)"
+    if dumpTab == "REMOTES" then
+        lines[#lines + 1] = "=== REMOTES (" .. #remoteCache .. ") ==="
+        for i, entry in ipairs(remoteCache) do
+            lines[#lines + 1] = string.format("[%d] %s  %s", i, entry.kind, entry.path)
+            lines[#lines + 1] = "    args: " .. (entry.lastArgs and argsPreview(entry.lastArgs, entry.argCount) or "(none)")
         end
+    elseif dumpTab == "DECALS" then
+        lines[#lines + 1] = "=== DECALS (" .. #decalCache .. ") ==="
+        for i, entry in ipairs(decalCache) do
+            lines[#lines + 1] = string.format("[%d] %s  %s  →  %s", i, entry.kind, entry.path, entry.texture)
+        end
+    elseif dumpTab == "MODELS" then
+        lines[#lines + 1] = "=== MODELS (" .. #modelCache .. ") ==="
+        for i, entry in ipairs(modelCache) do
+            lines[#lines + 1] = string.format("[%d] %s  %s", i, entry.kind, entry.path)
+            lines[#lines + 1] = "    name: " .. entry.name
+            lines[#lines + 1] = "    parts: " .. tostring(entry.partCount) .. "  children: " .. tostring(entry.childCount)
+            if entry.meshId ~= "" then lines[#lines + 1] = "    meshId: " .. entry.meshId end
+            if entry.textureId ~= "" then lines[#lines + 1] = "    textureId: " .. entry.textureId end
+        end
+    else
+        lines[#lines + 1] = "=== SOUNDS (" .. #assetCache.Sounds .. ") ==="
+        for _, s in ipairs(assetCache.Sounds) do lines[#lines + 1] = "  " .. s.name .. " → " .. s.id end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "=== ANIMATIONS (" .. #assetCache.Animations .. ") ==="
+        for _, a in ipairs(assetCache.Animations) do lines[#lines + 1] = "  " .. a.name .. " → " .. a.id end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "=== PARTICLES (" .. #assetCache.Particles .. ") ==="
+        for _, p in ipairs(assetCache.Particles) do lines[#lines + 1] = "  " .. p.name .. " → " .. p.id end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "=== TOOLS (" .. #assetCache.Tools .. ") ==="
+        for _, t in ipairs(assetCache.Tools) do lines[#lines + 1] = "  " .. t.name end
     end
     local content = table.concat(lines, "\n")
-    if copyText(content) then
-        remoteStatus.Text = "Exported " .. #remoteCache .. " remotes to clipboard"
-        addEntry("SYSTEM", "REMOTE_DUMP_EXPORTED count=" .. #remoteCache)
+    if copyToClipboard(content) then
+        dumpStatus.Text = "Exported " .. dumpTab .. " to clipboard"
+        notify("Exported to clipboard", COLORS.green)
     else
-        exportHeader.Text = "REMOTE DUMP (clipboard unavailable)"
-        exportBox.Text = content
-        exportFrame.Visible = true
-        remoteStatus.Text = "Clipboard blocked; manual export shown"
+        dumpStatus.Text = "Clipboard failed"
     end
 end)
 
-bind(remotePlayAll.Activated, function()
+bind(playAllRemote.Activated, function()
     if #remoteCache == 0 then
-        remoteStatus.Text = "No remotes to play. Run DUMP first."
+        dumpStatus.Text = "No remotes to play."
         return
     end
     local fired, failed = 0, 0
     for _, entry in ipairs(remoteCache) do
         if entry.remote and entry.remote.Parent then
             local ok = pcall(function()
-                if entry.kind == "RemoteFunction" then
-                    entry.remote:InvokeServer()
-                else
-                    entry.remote:FireServer()
-                end
+                if entry.kind == "RemoteFunction" then entry.remote:InvokeServer()
+                else entry.remote:FireServer() end
             end)
             if ok then fired = fired + 1 else failed = failed + 1 end
         end
     end
-    remoteStatus.Text = "Played " .. fired .. " remote(s), " .. failed .. " failed"
+    dumpStatus.Text = "Played " .. fired .. ", " .. failed .. " failed"
+    notify("Played " .. fired .. " remotes", COLORS.red)
     addEntry("SYSTEM", "PLAY_ALL fired=" .. fired .. " failed=" .. failed)
 end)
 
-bind(remotePlayAllArgs.Activated, function()
+bind(playAllArgsRemote.Activated, function()
     if #remoteCache == 0 then
-        remoteStatus.Text = "No remotes to play. Run DUMP first."
+        dumpStatus.Text = "No remotes to play."
         return
     end
     local fired, skipped, failed = 0, 0, 0
@@ -754,11 +1352,8 @@ bind(remotePlayAllArgs.Activated, function()
         if entry.remote and entry.remote.Parent then
             if entry.lastArgs then
                 local ok = pcall(function()
-                    if entry.kind == "RemoteFunction" then
-                        entry.remote:InvokeServer(table.unpack(entry.lastArgs))
-                    else
-                        entry.remote:FireServer(table.unpack(entry.lastArgs))
-                    end
+                    if entry.kind == "RemoteFunction" then entry.remote:InvokeServer(table.unpack(entry.lastArgs))
+                    else entry.remote:FireServer(table.unpack(entry.lastArgs)) end
                 end)
                 if ok then fired = fired + 1 else failed = failed + 1 end
             else
@@ -766,14 +1361,17 @@ bind(remotePlayAllArgs.Activated, function()
             end
         end
     end
-    remoteStatus.Text = "Played " .. fired .. " with args, " .. skipped .. " skipped, " .. failed .. " failed"
-    addEntry("SYSTEM", "PLAY_ALL_ARGS fired=" .. fired .. " skipped=" .. skipped .. " failed=" .. failed)
+    dumpStatus.Text = "Played " .. fired .. " with args, " .. skipped .. " skipped"
+    notify("Played " .. fired .. " with args", COLORS.green)
+    addEntry("SYSTEM", "PLAY_ALL_ARGS fired=" .. fired .. " skipped=" .. skipped)
 end)
 
--- ============================================================
--- END REMOTE PANEL
--- ============================================================
+bind(searchBox:GetPropertyChangedSignal("Text"), function()
+    searchQuery = searchBox.Text or ""
+    renderDump()
+end)
 
+-- export fallback frame
 local exportFrame = round(instance("Frame", {
     Visible = false,
     Position = UDim2.new(0, 15, 0, 60),
@@ -806,6 +1404,9 @@ local exportBox = instance("TextBox", {
 }, exportFrame)
 round(exportBox, 6)
 
+-- ============================================================
+-- SCALE / DRAG / DOCK
+-- ============================================================
 local function updateScale()
     local camera = Workspace.CurrentCamera
     if not camera then return end
@@ -822,6 +1423,36 @@ bind(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
         bind(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale)
     end
 end)
+
+local function snapToDock()
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local vs = camera.ViewportSize
+    local halfW = vs.X / 2
+    local halfH = vs.Y / 2
+    local centerX = main.Position.X.Offset + halfW
+    local centerY = main.Position.Y.Offset + halfH
+    local leftDist = math.abs(centerX)
+    local rightDist = math.abs(vs.X - centerX)
+    local topDist = math.abs(centerY)
+    local bottomDist = math.abs(vs.Y - centerY)
+    local minDist = math.min(leftDist, rightDist, topDist, bottomDist)
+    if minDist == leftDist then
+        state.dockSide = "left"
+        main.Position = UDim2.new(0, 8, main.Position.Y.Scale, main.Position.Y.Offset)
+    elseif minDist == rightDist then
+        state.dockSide = "right"
+        main.Position = UDim2.new(1, -675 - 8, main.Position.Y.Scale, main.Position.Y.Offset)
+    elseif minDist == topDist then
+        state.dockSide = "top"
+        main.Position = UDim2.new(main.Position.X.Scale, main.Position.X.Offset, 0, 8)
+    else
+        state.dockSide = "bottom"
+        main.Position = UDim2.new(main.Position.X.Scale, main.Position.X.Offset, 1, -530 - 8)
+    end
+    dockHint.Text = "docked: " .. state.dockSide
+    notify("Docked " .. state.dockSide, COLORS.accent)
+end
 
 local dragging = false
 local dragStart, windowStart
@@ -843,16 +1474,21 @@ bind(UserInputService.InputChanged, function(input)
     end
 end)
 
+bind(dockButton.Activated, snapToDock)
+
+-- ============================================================
+-- MINIMIZE / CLOSE / RESTORE
+-- ============================================================
 local regularSize = UDim2.fromOffset(675, 530)
-local minimizedSize = UDim2.fromOffset(380, 55)
-local contents = {statsPanel, tools, toggles, viewport, footer, exportFrame, remotePanel}
+local minimizedSize = UDim2.fromOffset(675, 55)
+local contents = {statsPanel, tools, toggles, viewport, footer, exportFrame, dumpPanel}
 
 local function restoreWindow()
     state.closed = false
     state.minimized = false
     main.Size = regularSize
     for _, element in ipairs(contents) do
-        element.Visible = (element ~= exportFrame and element ~= remotePanel)
+        element.Visible = (element ~= exportFrame and element ~= dumpPanel)
     end
     minimizeButton.Text = "_"
     main.Visible = true
@@ -865,7 +1501,7 @@ local function setMinimized(value)
     state.minimized = value
     main.Size = value and minimizedSize or regularSize
     for _, element in ipairs(contents) do
-        element.Visible = (not value and element ~= exportFrame and element ~= remotePanel)
+        element.Visible = (not value and element ~= exportFrame and element ~= dumpPanel)
     end
     minimizeButton.Text = value and "+" or "_"
     main.Visible = true
@@ -882,76 +1518,66 @@ local function setClosed(value)
     state.dirty = true
 end
 
-local floatingDrag, floatingStart, floatingPosition, floatingMoved
 bind(minimizeButton.Activated, function()
-    addEntry("SYSTEM", state.minimized and "LOGGER_RESTORE_FROM_MINIMIZE" or "LOGGER_MINIMIZE")
+    addEntry("SYSTEM", state.minimized and "RESTORE_FROM_MIN" or "MINIMIZE")
     setMinimized(not state.minimized)
 end)
+
 bind(closeButton.Activated, function()
-    addEntry("SYSTEM", "LOGGER_CLOSE_WINDOW (capture still running)")
+    addEntry("SYSTEM", "CLOSE_WINDOW (capture still running)")
     setClosed(true)
 end)
-bind(compactButton.Activated, function()
-    if floatingMoved then floatingMoved = false return end
-    addEntry("SYSTEM", "LOGGER_REOPEN_FLOATING_BUTTON")
-    restoreWindow()
-end)
-bind(exportClose.Activated, function() exportFrame.Visible = false end)
 
+local pillDrag = false
+local pillStart, pillOrigin, pillMoved
 bind(compactButton.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        floatingDrag = true
-        floatingMoved = false
-        floatingStart = input.Position
-        floatingPosition = compactButton.Position
+        pillDrag = true
+        pillMoved = false
+        pillStart = input.Position
+        pillOrigin = compactButton.Position
         bind(input.Changed, function()
-            if input.UserInputState == Enum.UserInputState.End then floatingDrag = false end
+            if input.UserInputState == Enum.UserInputState.End then pillDrag = false end
         end)
     end
 end)
 bind(UserInputService.InputChanged, function(input)
-    if floatingDrag and (input.UserInputType == Enum.UserInputType.MouseMovement
+    if pillDrag and (input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - floatingStart
-        if delta.Magnitude > 7 then
-            floatingMoved = true
+        local delta = input.Position - pillStart
+        if delta.Magnitude > 5 then
+            pillMoved = true
             local camera = Workspace.CurrentCamera
-            local viewportSize = camera and camera.ViewportSize or Vector2.new(800, 600)
-            local newX = math.clamp(floatingPosition.X.Offset + delta.X,
-                -viewportSize.X + 70, -7)
-            local newY = math.clamp(floatingPosition.Y.Offset + delta.Y,
-                -viewportSize.Y * 0.5 + 40, viewportSize.Y * 0.5 - 40)
-            compactButton.Position = UDim2.new(floatingPosition.X.Scale,
-                newX, floatingPosition.Y.Scale, newY)
+            local vs = camera and camera.ViewportSize or Vector2.new(800, 600)
+            local nx = math.clamp(pillOrigin.X.Offset + delta.X, -vs.X + 70, -7)
+            local ny = math.clamp(pillOrigin.Y.Offset + delta.Y, -vs.Y * 0.5 + 40, vs.Y * 0.5 - 40)
+            compactButton.Position = UDim2.new(pillOrigin.X.Scale, nx, pillOrigin.Y.Scale, ny)
         end
     end
 end)
+bind(compactButton.Activated, function()
+    if pillMoved then pillMoved = false return end
+    addEntry("SYSTEM", "REOPEN_FROM_PILL")
+    restoreWindow()
+end)
 
-local function copyText(content)
-    for _, fnName in ipairs({"setclipboard", "toclipboard"}) do
-        local fn = ENV[fnName] or _G[fnName]
-        if type(fn) == "function" then
-            local ok = pcall(fn, content)
-            if ok then return true end
-        end
-    end
-    return false
-end
+bind(exportClose.Activated, function() exportFrame.Visible = false end)
 
+-- ============================================================
+-- COPY / SAVE / CLEAR / PAUSE / FILTER
+-- ============================================================
 bind(copyButton.Activated, function()
     local content = report()
-    if copyText(content) then
-        addEntry("SYSTEM", "Report copied locally (" .. tostring(#content) .. " characters)")
-        copyButton.Text = "COPIED!"
-        task.delay(1.4, function()
-            if state.alive then copyButton.Text = "COPY ALL" end
-        end)
+    if copyToClipboard(content) then
+        addEntry("SYSTEM", "Report copied (" .. tostring(#content) .. " chars)")
+        notify("Report copied", COLORS.accent)
+        copyButton.Text = "OK!"
+        task.delay(1.4, function() if state.alive then copyButton.Text = "COPY" end end)
     else
         exportBox.Text = content
         exportFrame.Visible = true
         addEntry("SYSTEM", "Clipboard unsupported; manual export opened")
-        pcall(function() exportBox:CaptureFocus() end)
     end
 end)
 
@@ -964,67 +1590,38 @@ end
 local function saveReportTxt()
     local writer = ENV.writefile or _G.writefile or writefile
     if type(writer) ~= "function" then
-        exportStatus("SAVE TXT UNAVAILABLE", "Your executor does not expose writefile().\n\nUse COPY ALL, or switch to an executor that supports saving workspace files.")
-        addEntry("SYSTEM", "SAVE_TXT_UNAVAILABLE writefile() not supported")
+        exportStatus("SAVE TXT UNAVAILABLE", "Your executor does not expose writefile().")
+        addEntry("SYSTEM", "SAVE_TXT_UNAVAILABLE")
         return nil
     end
-
     local safeGameName = tostring(state.gameName or "Game")
-        :gsub("[^%w%s%-_]", "")
-        :gsub("%s+", "_")
-        :gsub("^_+", "")
-        :gsub("_+$", "")
-        :sub(1, 40)
+        :gsub("[^%w%s%-_]", ""):gsub("%s+", "_"):gsub("^_+", ""):gsub("_+$", ""):sub(1, 40)
     if safeGameName == "" then safeGameName = "Game" end
     state.saveSequence = (state.saveSequence or 0) + 1
-    local prefix = "MorantxHub_" .. safeGameName .. "_" .. tostring(game.PlaceId) ..
+    local prefix = HUB_TAG .. "_" .. safeGameName .. "_" .. tostring(game.PlaceId) ..
         "_" .. os.date("%Y%m%d_%H%M%S")
-    local function fileName()
-        return prefix .. "_" .. tostring(state.saveSequence) .. ".txt"
-    end
-    local filename = fileName()
+    local filename = prefix .. "_" .. tostring(state.saveSequence) .. ".txt"
     local fileExists = ENV.isfile or _G.isfile or isfile
     if type(fileExists) == "function" then
         for _ = 1, 100 do
             local ok, exists = pcall(fileExists, filename)
             if not ok or not exists then break end
             state.saveSequence = state.saveSequence + 1
-            filename = fileName()
+            filename = prefix .. "_" .. tostring(state.saveSequence) .. ".txt"
         end
     end
-
     local entryCount = state.count
     local content = report()
     local ok, err = pcall(writer, filename, content)
     if not ok then
         exportStatus("SAVE TXT FAILED", "File: " .. filename .. "\n\n" .. tostring(err))
-        addEntry("SYSTEM", "SAVE_TXT_FAILED: " .. tostring(err))
         return nil
     end
-
-    local reader = ENV.readfile or _G.readfile or readfile
-    if type(reader) == "function" then
-        local readOK, savedContent = pcall(reader, filename)
-        if not readOK or savedContent ~= content then
-            exportStatus("SAVE TXT COULD NOT BE VERIFIED",
-                "File: " .. filename .. "\n\nThe executor reported saving, but readback did not match the complete report. Check the file before uploading it.")
-            addEntry("SYSTEM", "SAVE_TXT_READBACK_MISMATCH file=" .. filename)
-            return nil
-        end
-    end
-
-    exportStatus("TXT SAVED TO EXECUTOR WORKSPACE",
-        "Filename: " .. filename ..
-        "\n\nSaved events: " .. tostring(entryCount) ..
-        "\nFile bytes: " .. tostring(#content) ..
-        "\n\nOpen your executor's workspace/files directory, locate this file, and upload it to ChatGPT." ..
-        "\n\nThe file ends with --- LOG END ---. Rate-limited and overwritten events cannot be recovered.")
-    addEntry("SYSTEM", "SAVE_TXT_SUCCESS file=" .. filename ..
-        " savedEvents=" .. tostring(entryCount) .. " bytes=" .. tostring(#content))
-    saveButton.Text = "SAVED!"
-    task.delay(1.5, function()
-        if state.alive then saveButton.Text = "SAVE TXT" end
-    end)
+    exportStatus("TXT SAVED", "Filename: " .. filename .. "\n\nEvents: " .. tostring(entryCount) .. "\nBytes: " .. tostring(#content))
+    addEntry("SYSTEM", "SAVE_TXT_SUCCESS file=" .. filename)
+    notify("Saved: " .. filename, COLORS.green)
+    saveButton.Text = "OK!"
+    task.delay(1.5, function() if state.alive then saveButton.Text = "SAVE" end end)
     return filename
 end
 
@@ -1036,7 +1633,8 @@ bind(clearButton.Activated, function()
     state.recent = {}
     state.eventTypes = {}
     for category in pairs(state.stats) do state.stats[category] = 0 end
-    addEntry("SYSTEM", "Log cleared by user")
+    addEntry("SYSTEM", "Log cleared")
+    notify("Log cleared", COLORS.orange)
 end)
 
 bind(pauseButton.Activated, function()
@@ -1048,10 +1646,11 @@ end)
 bind(filterButton.Activated, function()
     local index = table.find(CATEGORIES, state.filter) or 1
     state.filter = CATEGORIES[index % #CATEGORIES + 1]
-    filterButton.Text = "FILTER: " .. state.filter
+    filterButton.Text = state.filter
     state.dirty = true
 end)
 
+-- toggles
 local function updateToggles()
     for key, b in pairs(toggleButtons) do
         local enabled = state.capture[key]
@@ -1062,9 +1661,7 @@ local function updateToggles()
             (key == "TOOL" and "TOOLS" or key))
         b.Text = caption .. (enabled and " ON" or " OFF")
     end
-    footer.Text = (state.capture.ARGS and
-        "ARG values ON — review private data before sharing. " or
-        "ARG values OFF — type summaries only. ") ..
+    footer.Text = (state.capture.ARGS and "ARG values ON. " or "ARG values OFF. ") ..
         (state.remoteSupported and "Remote hook ready." or "Remote hook unavailable.")
 end
 for key, b in pairs(toggleButtons) do
@@ -1076,6 +1673,7 @@ for key, b in pairs(toggleButtons) do
 end
 updateToggles()
 
+-- refresh loop
 local function refreshDisplay()
     if not state.alive then return end
     if not state.dirty then return end
@@ -1084,13 +1682,12 @@ local function refreshDisplay()
     statsTop.Text = string.format("EVENTS %d   GUI %d   REMOTE %d   INTERACT %d   INPUT %d",
         state.lifetime, stats.GUI, stats.REMOTE, stats.INTERACT, stats.INPUT)
     statsBottom.Text = string.format(
-        "Tool %d  Char %d  Player %d  World %d  Audio %d  Kept %d/%d  Skipped %d  %s",
+        "Tool %d  Char %d  Player %d  World %d  Audio %d  Kept %d/%d  %s",
         stats.TOOL, stats.CHARACTER, stats.PLAYER, stats.WORLD, stats.AUDIO,
-        state.count, MAX_LINES, state.overwritten + state.suppressed,
-        state.paused and "PAUSED" or "LIVE")
+        state.count, MAX_LINES, state.paused and "PAUSED" or "LIVE")
     local view = getEntries(state.filter, MAX_ON_SCREEN)
     logText.Text = #view > 0 and table.concat(view, "\n") or
-        "No entries in this filter yet. Try interacting with the game."
+        "No entries in this filter yet."
     task.defer(function()
         if not state.alive or state.minimized then return end
         local bottom = math.max(0, viewport.AbsoluteCanvasSize.Y - viewport.AbsoluteWindowSize.Y)
@@ -1105,14 +1702,15 @@ task.spawn(function()
     end
 end)
 
+-- ============================================================
+-- GUI WATCHERS
+-- ============================================================
 local function isOurGui(obj)
     return obj == gui or obj:IsDescendantOf(gui)
 end
 
 local function shouldWatchVisibility(obj)
-    if not obj:IsA("GuiObject") or obj:IsA("TextLabel") then
-        return false
-    end
+    if not obj:IsA("GuiObject") or obj:IsA("TextLabel") then return false end
     local name = obj.Name:lower()
     if name:find("menu", 1, true) or name:find("panel", 1, true)
         or name:find("shop", 1, true) or name:find("popup", 1, true)
@@ -1148,15 +1746,10 @@ local function watchGui(obj)
     if not observe then return end
     state.trackedGui[obj] = {}
     state.guiWatched = state.guiWatched + 1
-
     if obj:IsA("ScreenGui") then
-        bind(obj.Destroying, function()
-            addEntry("GUI", "MENU_DESTROYED name=" .. quoteString(obj.Name)
-                .. " path=" .. instancePath(obj))
-        end, obj)
         bind(obj:GetPropertyChangedSignal("Enabled"), function()
             addEntry("GUI", (obj.Enabled and "MENU_OPEN " or "MENU_CLOSE ")
-                .. "name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+                .. "name=" .. quoteString(obj.Name), instancePath(obj), 0.05)
         end, obj)
     end
     if obj:IsA("GuiButton") then
@@ -1170,75 +1763,43 @@ local function watchGui(obj)
             if label == "" then label = obj.Name end
             local action = "BUTTON_PRESS label=" .. quoteString(label)
                 .. " name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj)
-                .. " clickCount=" .. tostring(clickCount or 0)
+                .. " count=" .. tostring(clickCount or 0)
             state.lastInteraction = action
             addEntry("GUI", action, nil, nil, "BUTTON_PRESS")
         end, obj)
     end
-    if obj:IsA("GuiObject") and not obj:IsA("GuiButton") then
-        bind(obj.InputBegan, function(input)
-            if obj.Active and (input.UserInputType == Enum.UserInputType.MouseButton1
-                or input.UserInputType == Enum.UserInputType.Touch) then
-                addEntry("GUI", "CUSTOM_UI_PRESS name=" .. quoteString(obj.Name)
-                    .. " path=" .. instancePath(obj), instancePath(obj) .. ":tap", 0.2)
-            end
-        end, obj)
-    end
     if obj:IsA("TextBox") then
         bind(obj.Focused, function()
-            addEntry("GUI", "TEXTBOX_FOCUS name=" .. quoteString(obj.Name)
-                .. " path=" .. instancePath(obj) .. " (content hidden)")
+            addEntry("GUI", "TEXTBOX_FOCUS name=" .. quoteString(obj.Name))
         end, obj)
         bind(obj.FocusLost, function(submitted)
             addEntry("GUI", "TEXTBOX_BLUR name=" .. quoteString(obj.Name)
-                .. " path=" .. instancePath(obj)
-                .. " enter=" .. tostring(submitted) .. " (content hidden)")
-        end, obj)
-    end
-    if obj:IsA("TextButton") then
-        local priorText = obj.Text
-        bind(obj:GetPropertyChangedSignal("Text"), function()
-            local current = obj.Text
-            if priorText ~= current then
-                addEntry("GUI", "BUTTON_LABEL_CHANGE name=" .. quoteString(obj.Name)
-                    .. " old=" .. quoteString(priorText)
-                    .. " new=" .. quoteString(current)
-                    .. " path=" .. instancePath(obj), instancePath(obj) .. ":text", 0.25)
-                priorText = current
-            end
+                .. " enter=" .. tostring(submitted))
         end, obj)
     end
     if shouldWatchVisibility(obj) then
         bind(obj:GetPropertyChangedSignal("Visible"), function()
             addEntry("GUI", (obj.Visible and "UI_SHOW " or "UI_HIDE ")
-                .. "name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+                .. "name=" .. quoteString(obj.Name))
         end, obj)
     end
 end
 
 local firstGui = PlayerGui:GetDescendants()
-for _, child in ipairs(firstGui) do
-    if child:IsA("GuiButton") or child:IsA("ScreenGui") then watchGui(child) end
-end
 for _, child in ipairs(firstGui) do watchGui(child) end
-for _, child in ipairs(firstGui) do
-    if child:IsA("ScreenGui") then
-        addEntry("GUI", (child.Enabled and "MENU_INITIAL_OPEN " or "MENU_INITIAL_CLOSED ")
-            .. "name=" .. quoteString(child.Name) .. " path=" .. instancePath(child))
-    end
-end
 bind(PlayerGui.DescendantAdded, function(child) watchGui(child) end)
 bind(PlayerGui.DescendantRemoving, function(child) unwatchGui(child) end)
 
+-- ============================================================
+-- TOOL WATCHERS
+-- ============================================================
 local function watchTool(tool)
     if not tool:IsA("Tool") or state.trackedTools[tool] then return end
     state.trackedTools[tool] = true
     bind(tool.Equipped, function() addEntry("TOOL", "EQUIP " .. instancePath(tool)) end)
     bind(tool.Unequipped, function() addEntry("TOOL", "UNEQUIP " .. instancePath(tool)) end)
     bind(tool.Activated, function()
-        local action = "TOOL_ACTIVATE name=" .. quoteString(tool.Name) .. " path=" .. instancePath(tool)
-        state.lastInteraction = action
-        addEntry("TOOL", action)
+        addEntry("TOOL", "TOOL_ACTIVATE name=" .. quoteString(tool.Name))
     end)
     bind(tool.Deactivated, function()
         addEntry("TOOL", "TOOL_DEACTIVATE " .. instancePath(tool))
@@ -1249,54 +1810,35 @@ local backpack = LocalPlayer:WaitForChild("Backpack")
 for _, child in ipairs(backpack:GetChildren()) do watchTool(child) end
 bind(backpack.ChildAdded, function(obj)
     watchTool(obj)
-    addEntry("TOOL", "BACKPACK_ADD name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+    addEntry("TOOL", "BACKPACK_ADD name=" .. quoteString(obj.Name))
 end)
 bind(backpack.ChildRemoved, function(obj)
-    addEntry("TOOL", "BACKPACK_REMOVE name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+    addEntry("TOOL", "BACKPACK_REMOVE name=" .. quoteString(obj.Name))
 end)
 
+-- ============================================================
+-- CHARACTER
+-- ============================================================
 local function onCharacter(character)
-    addEntry("CHARACTER", "CHARACTER SPAWN " .. instancePath(character))
+    addEntry("CHARACTER", "SPAWN " .. instancePath(character))
     for _, child in ipairs(character:GetChildren()) do watchTool(child) end
-    bind(character.ChildAdded, function(child)
-        watchTool(child)
-        if child:IsA("Tool") then
-            addEntry("TOOL", "CHARACTER_TOOL_EQUIPPED name=" .. quoteString(child.Name))
-        end
-    end)
-    bind(character.ChildRemoved, function(child)
-        if child:IsA("Tool") then
-            addEntry("TOOL", "CHARACTER_TOOL_REMOVED name=" .. quoteString(child.Name))
-        end
-    end)
     local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
     if not humanoid then return end
     bind(humanoid.Died, function() addEntry("CHARACTER", "DIED") end)
     bind(humanoid.StateChanged, function(_, nextState)
         if nextState == Enum.HumanoidStateType.Jumping
             or nextState == Enum.HumanoidStateType.Freefall
-            or nextState == Enum.HumanoidStateType.Landed
-            or nextState == Enum.HumanoidStateType.Seated
-            or nextState == Enum.HumanoidStateType.Swimming
-            or nextState == Enum.HumanoidStateType.Climbing then
+            or nextState == Enum.HumanoidStateType.Landed then
             addEntry("CHARACTER", "STATE " .. nextState.Name, nextState.Name, 0.3)
         end
     end)
-    local lastHealth = humanoid.Health
-    bind(humanoid.HealthChanged, function(health)
-        if math.abs(health - lastHealth) >= 1 or health <= 0 then
-            lastHealth = health
-            addEntry("CHARACTER", string.format("HEALTH %.1f / %.1f", health, humanoid.MaxHealth),
-                "health", 0.3)
-        end
-    end)
 end
-bind(LocalPlayer.CharacterRemoving, function(character)
-    addEntry("CHARACTER", "CHARACTER_REMOVING " .. instancePath(character))
-end)
 bind(LocalPlayer.CharacterAdded, onCharacter)
 if LocalPlayer.Character then task.spawn(onCharacter, LocalPlayer.Character) end
 
+-- ============================================================
+-- PROXIMITY PROMPTS
+-- ============================================================
 bind(ProximityPromptService.PromptShown, function(prompt)
     addEntry("INTERACT", "PROMPT SHOW " .. instancePath(prompt)
         .. " action=" .. quoteString(prompt.ActionText), instancePath(prompt), 0.12)
@@ -1306,59 +1848,42 @@ bind(ProximityPromptService.PromptHidden, function(prompt)
 end)
 bind(ProximityPromptService.PromptTriggered, function(prompt, who)
     if who == LocalPlayer then
-        addEntry("INTERACT", "PROMPT TRIGGER " .. instancePath(prompt)
-            .. " action=" .. quoteString(prompt.ActionText))
+        addEntry("INTERACT", "PROMPT TRIGGER " .. instancePath(prompt))
     end
 end)
-bind(ProximityPromptService.PromptButtonHoldBegan, function(prompt, who)
-    if who == LocalPlayer then addEntry("INTERACT", "PROMPT HOLD START " .. instancePath(prompt)) end
-end)
-bind(ProximityPromptService.PromptButtonHoldEnded, function(prompt, who)
-    if who == LocalPlayer then addEntry("INTERACT", "PROMPT HOLD END " .. instancePath(prompt)) end
-end)
 
+-- ============================================================
+-- INPUT
+-- ============================================================
 local mouse = LocalPlayer:GetMouse()
 bind(UserInputService.InputBegan, function(input, gameProcessed)
     if not state.alive then return end
-    if input.KeyCode == Enum.KeyCode.F8 and not UserInputService:GetFocusedTextBox() then
+    if input.KeyCode == state.hotkey and not UserInputService:GetFocusedTextBox() then
         if state.closed or state.minimized then restoreWindow() else setClosed(true) end
     end
     if UserInputService:GetFocusedTextBox() then return end
-    local inputType = input.UserInputType
-    if inputType == Enum.UserInputType.Keyboard then
+    local it = input.UserInputType
+    if it == Enum.UserInputType.Keyboard then
         if input.KeyCode ~= Enum.KeyCode.Unknown then
-            addEntry("INPUT", "KEY_DOWN " .. input.KeyCode.Name
-                .. " processed=" .. tostring(gameProcessed))
+            addEntry("INPUT", "KEY_DOWN " .. input.KeyCode.Name)
         end
-    elseif inputType.Name:find("Gamepad", 1, true) then
-        addEntry("INPUT", "GAMEPAD_DOWN " .. input.KeyCode.Name
-            .. " processed=" .. tostring(gameProcessed))
-    elseif inputType == Enum.UserInputType.MouseButton1
-        or inputType == Enum.UserInputType.MouseButton2 then
+    elseif it.Name:find("Gamepad", 1, true) then
+        addEntry("INPUT", "GAMEPAD_DOWN " .. input.KeyCode.Name)
+    elseif it == Enum.UserInputType.MouseButton1 or it == Enum.UserInputType.MouseButton2 then
         local target = mouse.Target
         if not gameProcessed then
-            addEntry("INPUT", (inputType == Enum.UserInputType.MouseButton1 and
+            addEntry("INPUT", (it == Enum.UserInputType.MouseButton1 and
                 "MOUSE_LEFT_DOWN" or "MOUSE_RIGHT_DOWN") .. " target=" ..
                 (target and instancePath(target) or "none"), "click", 0.02)
         end
-        if target and not gameProcessed then
-            local cursor = target
-            for _ = 1, 6 do
-                if not cursor then break end
-                local detector = cursor:FindFirstChildOfClass("ClickDetector")
-                if detector then
-                    addEntry("INTERACT", "CLICK_DETECTOR_TARGET " .. instancePath(detector)
-                        .. " target=" .. instancePath(target))
-                    break
-                end
-                cursor = cursor.Parent
-            end
-        end
-    elseif inputType == Enum.UserInputType.Touch then
-        addEntry("INPUT", "TOUCH_BEGIN processed=" .. tostring(gameProcessed), "touch", 0.1)
+    elseif it == Enum.UserInputType.Touch then
+        addEntry("INPUT", "TOUCH_BEGIN", "touch", 0.1)
     end
 end)
 
+-- ============================================================
+-- OUTGOING REMOTE HOOK
+-- ============================================================
 state.onRemote = function(remote, method, count, args)
     local pieces = {}
     for i = 1, math.min(count, 7) do
@@ -1376,12 +1901,11 @@ state.onRemote = function(remote, method, count, args)
         path .. ":" .. method, 0.035, "REMOTE_" .. method)
 end
 
-local canHook = type(hookmetamethod) == "function" and
-    type(getnamecallmethod) == "function"
-state.remoteSupported = canHook or (ENV.__MorantActionRecorderHook == true)
+local canHook = type(hookmetamethod) == "function" and type(getnamecallmethod) == "function"
+state.remoteSupported = canHook or (ENV.__VMHook == true)
 ENV.MorantActionRecorder = state
 
-if canHook and not ENV.__MorantActionRecorderHook then
+if canHook and not ENV.__VMHook then
     local wrap = type(newcclosure) == "function" and newcclosure or function(fn) return fn end
     local oldNamecall
     local success = pcall(function()
@@ -1390,10 +1914,10 @@ if canHook and not ENV.__MorantActionRecorderHook then
             if method == "FireServer" or method == "InvokeServer" then
                 local kind = typeof(self) == "Instance" and self.ClassName or ""
                 if kind == "RemoteEvent" or kind == "RemoteFunction" then
-                    local current = ENV.MorantActionRecorder
-                    if current and current.alive and current.capture.REMOTE then
+                    local cur = ENV.MorantActionRecorder
+                    if cur and cur.alive and cur.capture.REMOTE then
                         local argc, arguments = select("#", ...), {...}
-                        pcall(current.onRemote, self, method, argc, arguments)
+                        pcall(cur.onRemote, self, method, argc, arguments)
                     end
                 end
             end
@@ -1401,19 +1925,20 @@ if canHook and not ENV.__MorantActionRecorderHook then
         end))
     end)
     if success and oldNamecall then
-        ENV.__MorantActionRecorderHook = true
+        ENV.__VMHook = true
         state.remoteSupported = true
     else
         state.remoteSupported = false
     end
 end
 
+-- ============================================================
+-- OBJECT SCANNER
+-- ============================================================
 local function releaseOwned(map, object, counter)
     local connections = map[object]
     if not connections then return end
-    for _, connection in ipairs(connections) do
-        pcall(function() connection:Disconnect() end)
-    end
+    for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
     map[object] = nil
     if counter then state[counter] = math.max(0, state[counter] - 1) end
 end
@@ -1428,103 +1953,43 @@ local function bindOwned(map, object, signal, callback)
     return nil
 end
 
-local function describeArgs(argc, args)
-    local pieces = {}
-    for i = 1, math.min(argc, 7) do
-        local value = args[i]
-        pieces[#pieces + 1] = state.capture.ARGS and summarizeValue(value, 0, {}) or typeof(value)
-    end
-    if argc > 7 then pieces[#pieces + 1] = "... +" .. (argc - 7) .. " args" end
-    return table.concat(pieces, ", ")
-end
-
-local function watchRemote(object)
-    if state.trackedRemotes[object] then return end
-    if not (object:IsA("RemoteEvent") or object:IsA("UnreliableRemoteEvent")) then return end
-    if state.remoteCount >= MAX_REMOTE_WATCHES then
-        state.watchLimits.REMOTE = state.watchLimits.REMOTE + 1
-        return
-    end
-    state.trackedRemotes[object] = {}
-    state.remoteCount = state.remoteCount + 1
-    bindOwned(state.trackedRemotes, object, object.OnClientEvent, function(...)
-        local count = select("#", ...)
-        local arguments = {...}
-        local path = instancePath(object)
-        addEntry("REMOTE", "REMOTE_RECEIVE name=" .. quoteString(object.Name)
-            .. " path=" .. path .. " args=(" .. describeArgs(count, arguments) .. ")",
-            path .. ":RECEIVE", 0.035, "REMOTE_RECEIVE")
-    end)
-end
-
-local function watchWorldInteraction(object)
-    if state.trackedInteract[object] then return end
-    if not (object:IsA("ClickDetector") or object:IsA("DragDetector")) then return end
-    if state.interactCount >= MAX_INTERACT_WATCHES then
-        state.watchLimits.INTERACT = state.watchLimits.INTERACT + 1
-        return
-    end
-    state.trackedInteract[object] = {}
-    state.interactCount = state.interactCount + 1
-    if object:IsA("ClickDetector") then
-        bindOwned(state.trackedInteract, object, object.MouseClick, function(player)
-            if player == LocalPlayer then
-                local action = "CLICK_DETECTOR_PRESS path=" .. instancePath(object)
-                state.lastInteraction = action
-                addEntry("INTERACT", action)
-            end
-        end)
-        pcall(function()
-            bindOwned(state.trackedInteract, object, object.RightMouseClick, function(player)
-                if player == LocalPlayer then
-                    addEntry("INTERACT", "CLICK_DETECTOR_RIGHT_PRESS path=" .. instancePath(object))
-                end
-            end)
-        end)
-    else
-        for _, signalName in ipairs({"DragStart", "DragEnd"}) do
-            pcall(function()
-                bindOwned(state.trackedInteract, object, object[signalName], function()
-                    local action = "DRAG_" .. string.upper(signalName)
-                        .. " path=" .. instancePath(object)
-                    state.lastInteraction = action
-                    addEntry("INTERACT", action)
-                end)
-            end)
-        end
-    end
-end
-
-local function watchSound(object)
-    if not object:IsA("Sound") or state.trackedAudio[object] then return end
-    if state.audioCount >= MAX_AUDIO_WATCHES then
-        state.watchLimits.AUDIO = state.watchLimits.AUDIO + 1
-        return
-    end
-    state.trackedAudio[object] = {}
-    state.audioCount = state.audioCount + 1
-    bindOwned(state.trackedAudio, object, object.Played, function()
-        addEntry("AUDIO", "SOUND_PLAY name=" .. quoteString(object.Name)
-            .. " path=" .. instancePath(object), instancePath(object) .. ":play", 0.08)
-    end)
-    bindOwned(state.trackedAudio, object, object.Ended, function()
-        addEntry("AUDIO", "SOUND_END name=" .. quoteString(object.Name)
-            .. " path=" .. instancePath(object), instancePath(object) .. ":end", 0.08)
-    end)
-    bindOwned(state.trackedAudio, object, object.Stopped, function()
-        addEntry("AUDIO", "SOUND_STOP name=" .. quoteString(object.Name)
-            .. " path=" .. instancePath(object), instancePath(object) .. ":stop", 0.08)
-    end)
-end
-
 local function observeGameObject(object)
     if not state.alive then return end
     if object:IsA("RemoteEvent") or object:IsA("UnreliableRemoteEvent") then
-        watchRemote(object)
-    elseif object:IsA("ClickDetector") or object:IsA("DragDetector") then
-        watchWorldInteraction(object)
+        if state.trackedRemotes[object] or state.remoteCount >= MAX_REMOTE_WATCHES then return end
+        state.trackedRemotes[object] = {}
+        state.remoteCount = state.remoteCount + 1
+        bindOwned(state.trackedRemotes, object, object.OnClientEvent, function(...)
+            local count = select("#", ...)
+            local args = {...}
+            local path = instancePath(object)
+            local pieces = {}
+            for i = 1, math.min(count, 7) do
+                local v = args[i]
+                pieces[#pieces + 1] = state.capture.ARGS and summarizeValue(v, 0, {}) or typeof(v)
+            end
+            if count > 7 then pieces[#pieces + 1] = "... +" .. (count - 7) end
+            addEntry("REMOTE", "REMOTE_RECEIVE name=" .. quoteString(object.Name)
+                .. " path=" .. path .. " args=(" .. table.concat(pieces, ", ") .. ")",
+                path .. ":RECEIVE", 0.035, "REMOTE_RECEIVE")
+        end)
+    elseif object:IsA("ClickDetector") then
+        if state.trackedInteract[object] or state.interactCount >= MAX_INTERACT_WATCHES then return end
+        state.trackedInteract[object] = {}
+        state.interactCount = state.interactCount + 1
+        bindOwned(state.trackedInteract, object, object.MouseClick, function(player)
+            if player == LocalPlayer then
+                addEntry("INTERACT", "CLICK_DETECTOR_PRESS path=" .. instancePath(object))
+            end
+        end)
     elseif object:IsA("Sound") then
-        watchSound(object)
+        if state.trackedAudio[object] or state.audioCount >= MAX_AUDIO_WATCHES then return end
+        state.trackedAudio[object] = {}
+        state.audioCount = state.audioCount + 1
+        bindOwned(state.trackedAudio, object, object.Played, function()
+            addEntry("AUDIO", "SOUND_PLAY name=" .. quoteString(object.Name),
+                instancePath(object) .. ":play", 0.08)
+        end)
     end
 end
 
@@ -1538,28 +2003,8 @@ for _, root in ipairs({Workspace, ReplicatedStorage, SoundService, PlayerGui, ba
     bind(root.DescendantAdded, function(object)
         if isOurGui(object) then return end
         observeGameObject(object)
-        if root == Workspace and object:IsA("Model") then
-            local lower = string.lower(object.Name)
-            if lower:find("fruit", 1, true) or lower:find("egg", 1, true)
-                or lower:find("drop", 1, true) or lower:find("crate", 1, true)
-                or lower:find("loot", 1, true) or lower:find("reward", 1, true)
-                or lower:find("pickup", 1, true) then
-                addEntry("WORLD", "NAMED_OBJECT_SPAWN name=" .. quoteString(object.Name)
-                    .. " path=" .. instancePath(object), instancePath(object), 0.2)
-            end
-        end
     end)
     bind(root.DescendantRemoving, function(object)
-        if root == Workspace and object:IsA("Model") then
-            local lower = string.lower(object.Name)
-            if lower:find("fruit", 1, true) or lower:find("egg", 1, true)
-                or lower:find("drop", 1, true) or lower:find("crate", 1, true)
-                or lower:find("loot", 1, true) or lower:find("reward", 1, true)
-                or lower:find("pickup", 1, true) then
-                addEntry("WORLD", "NAMED_OBJECT_REMOVED name=" .. quoteString(object.Name)
-                    .. " path=" .. instancePath(object), instancePath(object), 0.2)
-            end
-        end
         unobserveGameObject(object)
     end)
 end
@@ -1567,78 +2012,42 @@ end
 task.spawn(function()
     local roots = {ReplicatedStorage, PlayerGui, SoundService, Workspace, backpack}
     local maxVisits = 35000
+    local visited = 0
     for _, root in ipairs(roots) do
         if not state.alive then return end
         local list = root:GetDescendants()
         for i, object in ipairs(list) do
             if not state.alive then return end
-            state.worldScanned = state.worldScanned + 1
+            visited = visited + 1
             if not isOurGui(object) then observeGameObject(object) end
-            if state.worldScanned >= maxVisits then
-                addEntry("SYSTEM", "INITIAL_SCAN_LIMIT reached at " .. maxVisits ..
-                    " objects; newly created objects are still watched")
+            if visited >= maxVisits then
+                addEntry("SYSTEM", "INITIAL_SCAN_LIMIT " .. maxVisits)
                 return
             end
             if i % 275 == 0 then task.wait() end
         end
     end
-    addEntry("SYSTEM", "INITIAL_OBJECT_SCAN_COMPLETE visited=" .. state.worldScanned)
+    addEntry("SYSTEM", "INITIAL_SCAN_DONE visited=" .. visited)
 end)
 
-local function sensitiveKey(key)
-    key = string.lower(tostring(key))
-    return key:find("token", 1, true) or key:find("password", 1, true)
-        or key:find("cookie", 1, true) or key:find("secret", 1, true)
-        or key:find("auth", 1, true) or key:find("webhook", 1, true)
-        or key:find("sessionid", 1, true)
-end
-
-local function valueDisplay(name, value)
-    if sensitiveKey(name) then return "<redacted>" end
-    if typeof(value) == "string" and not state.capture.ARGS then
-        return "<text omitted; enable ARGS for short values>"
-    end
-    return summarizeValue(value, 0, {})
-end
-
+-- ============================================================
+-- PLAYER VALUE WATCHERS
+-- ============================================================
 local function watchValue(object)
     if state.trackedValues[object] or not object:IsA("ValueBase") then return end
     state.trackedValues[object] = {}
     bindOwned(state.trackedValues, object, object.Changed, function(value)
         addEntry("PLAYER", "VALUE_CHANGED name=" .. quoteString(object.Name)
-            .. " path=" .. instancePath(object)
-            .. " value=" .. valueDisplay(object.Name, value), instancePath(object), 0.06)
+            .. " value=" .. summarizeValue(value, 0, {}), instancePath(object), 0.06)
     end)
 end
 
-local function watchAttributes(object, group)
-    bind(object.AttributeChanged, function(name)
-        local value = object:GetAttribute(name)
-        addEntry(group, "ATTRIBUTE_CHANGED target=" .. instancePath(object)
-            .. " name=" .. quoteString(name) .. " value=" .. valueDisplay(name, value),
-            instancePath(object) .. ":" .. name, 0.06)
-    end)
-end
-
-watchAttributes(LocalPlayer, "PLAYER")
 for _, child in ipairs(LocalPlayer:GetDescendants()) do watchValue(child) end
-bind(LocalPlayer.DescendantAdded, function(child)
-    watchValue(child)
-    if child:IsA("ScreenGui") and not isOurGui(child) then
-        addEntry("GUI", "MENU_CREATED name=" .. quoteString(child.Name)
-            .. " enabled=" .. tostring(child.Enabled) .. " path=" .. instancePath(child))
-    end
-end)
-bind(LocalPlayer.DescendantRemoving, function(child)
-    releaseOwned(state.trackedValues, child)
-end)
+bind(LocalPlayer.DescendantAdded, function(child) watchValue(child) end)
+bind(LocalPlayer.DescendantRemoving, function(child) releaseOwned(state.trackedValues, child) end)
 
 bind(LocalPlayer:GetPropertyChangedSignal("Team"), function()
-    addEntry("PLAYER", "TEAM_CHANGED " ..
-        (LocalPlayer.Team and quoteString(LocalPlayer.Team.Name) or "none"))
-end)
-bind(LocalPlayer:GetPropertyChangedSignal("Neutral"), function()
-    addEntry("PLAYER", "NEUTRAL_CHANGED " .. tostring(LocalPlayer.Neutral))
+    addEntry("PLAYER", "TEAM_CHANGED " .. (LocalPlayer.Team and quoteString(LocalPlayer.Team.Name) or "none"))
 end)
 bind(Players.PlayerAdded, function(player)
     addEntry("PLAYER", "PLAYER_JOIN name=" .. quoteString(player.Name))
@@ -1647,87 +2056,22 @@ bind(Players.PlayerRemoving, function(player)
     addEntry("PLAYER", "PLAYER_LEAVE name=" .. quoteString(player.Name))
 end)
 
-bind(UserInputService.InputEnded, function(input, processed)
-    if UserInputService:GetFocusedTextBox() then return end
-    if input.UserInputType == Enum.UserInputType.Keyboard then
-        addEntry("INPUT", "KEY_UP " .. input.KeyCode.Name
-            .. " processed=" .. tostring(processed), input.KeyCode.Name .. ":up", 0.01)
-    elseif input.UserInputType.Name:find("Gamepad", 1, true) then
-        addEntry("INPUT", "GAMEPAD_UP " .. input.KeyCode.Name,
-            input.KeyCode.Name .. ":up", 0.02)
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        addEntry("INPUT", "TOUCH_END", "touch-end", 0.1)
-    elseif input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.MouseButton2 then
-        addEntry("INPUT", input.UserInputType == Enum.UserInputType.MouseButton1
-            and "MOUSE_LEFT_UP" or "MOUSE_RIGHT_UP", "mouse-release", 0.02)
-    end
-end)
-bind(UserInputService.InputChanged, function(input, processed)
-    if UserInputService:GetFocusedTextBox() then return end
-    if input.UserInputType == Enum.UserInputType.MouseWheel then
-        addEntry("INPUT", "MOUSE_WHEEL direction=" ..
-            (input.Position.Z > 0 and "up" or "down"), "scroll", 0.06)
-    elseif input.UserInputType.Name:find("Gamepad", 1, true) and
-        input.Position.Magnitude > 0.7 then
-        addEntry("INPUT", "GAMEPAD_AXIS " .. input.KeyCode.Name
-            .. " value=" .. tostring(input.Position), input.KeyCode.Name .. ":axis", 0.4)
-    end
-end)
-
-local positionSample, sampleTime = nil, os.clock()
-bind(RunService.Heartbeat, function()
-    local now = os.clock()
-    if now - sampleTime < 0.75 then return end
-    local elapsed = now - sampleTime
-    sampleTime = now
-    local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not root then positionSample = nil return end
-    local position = root.Position
-    if positionSample then
-        local traveled = (position - positionSample).Magnitude
-        if traveled > math.max(55, elapsed * 95) then
-            addEntry("CHARACTER", string.format(
-                "RAPID_POSITION_CHANGE distance=%.1f from=(%s) to=(%s)",
-                traveled, tostring(positionSample), tostring(position)),
-                "rapid-position", 0.2)
-        end
-    end
-    positionSample = position
-end)
-
+-- ============================================================
+-- EXPORTS + DESTROY
+-- ============================================================
 state.CopyAll = function() return report() end
 state.SaveTxt = saveReportTxt
 state.GetStats = function() return state.stats end
 state.CloseWindow = function() setClosed(true) end
 state.OpenWindow = restoreWindow
-
-state.DumpRemotes = function()
-    local count = scanRemotes()
-    for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
-    renderRemoteList()
-    remotePanel.Visible = true
-    return count
-end
-state.PlayAllRemotes = function()
-    if #remoteCache == 0 then scanRemotes() end
-    local fired, failed = 0, 0
-    for _, entry in ipairs(remoteCache) do
-        if entry.remote and entry.remote.Parent then
-            local ok = pcall(function()
-                if entry.kind == "RemoteFunction" then
-                    entry.remote:InvokeServer()
-                else
-                    entry.remote:FireServer()
-                end
-            end)
-            if ok then fired = fired + 1 else failed = failed + 1 end
-        end
-    end
-    return fired, failed
-end
-state.GetRemoteList = function() return remoteCache end
+state.SnapDock = snapToDock
+state.GetRemotes = function() return remoteCache end
+state.GetDecals = function() return decalCache end
+state.GetModels = function() return modelCache end
+state.GetAssets = function() return assetCache end
+state.ScanDecals = scanDecals
+state.ScanModels = scanModels
+state.ScanAssets = scanAssets
 
 state.Destroy = function()
     if not state.alive then return end
@@ -1751,15 +2095,15 @@ task.spawn(function()
     if not state.alive then return end
     if ok and type(product) == "table" and type(product.Name) == "string" then
         state.gameName = product.Name
-        subtitle.Text = quoteString(product.Name) .. "  |  F8 / floating LOG to reopen"
+        subtitle.Text = quoteString(product.Name) .. "  |  F8 / pill to reopen"
         addEntry("SYSTEM", "EXPERIENCE_IDENTIFIED name=" .. quoteString(product.Name))
     end
 end)
 
-addEntry("SYSTEM", "UNIVERSAL_GAME_LOGGER_STARTED: _ minimize; X close; floating LOG reopen; F8 toggle; COPY ALL, SAVE TXT, DUMP REMOTES, PLAY ALL")
-addEntry("SYSTEM", state.remoteSupported and
-    "Remote hook active (outgoing namecalls only)" or
-    "Remote hook unsupported: GUI/interaction logging still available")
-addEntry("SYSTEM", "Remote argument values default OFF; enable ARGS when needed")
+addEntry("SYSTEM", HUB_NAME .. " v3.1 STARTED — _ min, ⇌ dock, X close, F8 toggle")
+addEntry("SYSTEM", state.remoteSupported and "Remote hook active" or "Remote hook unavailable")
+addEntry("SYSTEM", "DUMP remotes | DECALS images | MODELS meshes/tools | search filters | EXPORT copies")
 updateToggles()
 refreshDisplay()
+
+notify(HUB_NAME .. " v3.1 loaded", COLORS.accent)
