@@ -1,0 +1,1412 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+local RunService = game:GetService("RunService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local ENV = _G
+if type(getgenv) == "function" then
+    local ok, result = pcall(getgenv)
+    if ok and type(result) == "table" then ENV = result end
+end
+
+if ENV.MorantActionRecorder and type(ENV.MorantActionRecorder.Destroy) == "function" then
+    pcall(ENV.MorantActionRecorder.Destroy)
+end
+
+local MAX_LINES = 6000
+local MAX_ON_SCREEN = 180
+local MAX_GUI_WATCHES = 2400
+local MAX_REMOTE_WATCHES = 900
+local MAX_INTERACT_WATCHES = 700
+local MAX_AUDIO_WATCHES = 350
+local CATEGORIES = {"ALL", "GUI", "REMOTE", "INTERACT", "INPUT", "TOOL", "CHARACTER", "PLAYER", "WORLD", "AUDIO", "SYSTEM"}
+local COLORS = {
+    background = Color3.fromRGB(19, 21, 27),
+    surface = Color3.fromRGB(29, 33, 42),
+    elevated = Color3.fromRGB(38, 43, 54),
+    line = Color3.fromRGB(65, 71, 84),
+    foreground = Color3.fromRGB(238, 242, 248),
+    muted = Color3.fromRGB(158, 168, 183),
+    accent = Color3.fromRGB(114, 160, 252),
+    green = Color3.fromRGB(112, 207, 155),
+    red = Color3.fromRGB(241, 129, 140),
+}
+
+local state = {
+    alive = true,
+    paused = false,
+    minimized = false,
+    closed = false,
+    filter = "ALL",
+    capture = {GUI = true, INPUT = true, INTERACT = true, REMOTE = true,
+               ARGS = false, TOOL = true, CHARACTER = true, PLAYER = true,
+               WORLD = true, AUDIO = true},
+    entries = {},
+    head = 1,
+    count = 0,
+    lifetime = 0,
+    overwritten = 0,
+    suppressed = 0,
+    stats = {GUI = 0, REMOTE = 0, INTERACT = 0, INPUT = 0,
+             TOOL = 0, CHARACTER = 0, PLAYER = 0, WORLD = 0,
+             AUDIO = 0, SYSTEM = 0},
+    eventTypes = {},
+    watchLimits = {GUI = 0, REMOTE = 0, INTERACT = 0, AUDIO = 0},
+    dirty = true,
+    connections = {},
+    trackedGui = {},
+    guiWatched = 0,
+    trackedTools = {},
+    trackedRemotes = {},
+    remoteCount = 0,
+    trackedInteract = {},
+    interactCount = 0,
+    trackedAudio = {},
+    audioCount = 0,
+    trackedValues = {},
+    recent = {},
+    remoteSupported = false,
+    worldScanned = 0,
+    lastInteraction = "none",
+    gameName = game.Name,
+}
+
+local function bind(signal, callback, ownership)
+    local success, connection = pcall(function() return signal:Connect(callback) end)
+    if not success then return nil end
+    if ownership then
+        local list = state.trackedGui[ownership]
+        if list then table.insert(list, connection) end
+    else
+        table.insert(state.connections, connection)
+    end
+    return connection
+end
+
+local function instancePath(object)
+    if typeof(object) ~= "Instance" then return tostring(object) end
+    local pieces = {}
+    local cursor = object
+    for _ = 1, 12 do
+        if not cursor or cursor == game then break end
+        local ok, name, parent = pcall(function()
+            return cursor.Name, cursor.Parent
+        end)
+        if not ok then break end
+        table.insert(pieces, 1, name)
+        cursor = parent
+    end
+    local path = table.concat(pieces, ".")
+    if #path > 200 then path = "..." .. path:sub(-197) end
+    return path
+end
+
+local function quoteString(value)
+    local lower = string.lower(value)
+    if #value > 160 or lower:find("bearer ", 1, true)
+        or lower:find("token=", 1, true)
+        or lower:find("password=", 1, true)
+        or lower:find("authorization", 1, true)
+        or lower:find("https://", 1, true)
+        or lower:find("http://", 1, true) then
+        return "<redacted string, " .. #value .. " chars>"
+    end
+    return string.format("%q", value:gsub("[\r\n]", " "))
+end
+
+local function summarizeValue(value, depth, seen)
+    local kind = typeof(value)
+    if kind == "string" then return quoteString(value) end
+    if kind == "nil" then return "nil" end
+    if kind == "number" or kind == "boolean" then return tostring(value) end
+    if kind == "Instance" then return "Instance(" .. instancePath(value) .. ")" end
+    if kind == "Vector3" or kind == "Vector2" or kind == "CFrame"
+        or kind == "Color3" or kind == "UDim2" or kind == "EnumItem" then
+        return kind .. "(" .. tostring(value) .. ")"
+    end
+    if kind == "table" then
+        if depth >= 2 or seen[value] then return "{...}" end
+        seen[value] = true
+        local items, total = {}, 0
+        for k, v in pairs(value) do
+            total = total + 1
+            if total > 6 then break end
+            local lowerKey = tostring(k):lower()
+            local rendered = "<redacted>"
+            if not (lowerKey:find("password", 1, true)
+                or lowerKey:find("secret", 1, true)
+                or lowerKey:find("token", 1, true)
+                or lowerKey:find("cookie", 1, true)) then
+                rendered = summarizeValue(v, depth + 1, seen)
+            end
+            table.insert(items, tostring(k) .. "=" .. rendered)
+        end
+        seen[value] = nil
+        return "{" .. table.concat(items, ", ") .. (total > 6 and ", ..." or "") .. "}"
+    end
+    return "<" .. kind .. ">"
+end
+
+local function addEntry(category, message, rateKey, interval, eventType)
+    if not state.alive or (state.paused and category ~= "SYSTEM") then return end
+    if state.capture[category] == false then return end
+
+    if rateKey then
+        local key = category .. ":" .. rateKey
+        local now = os.clock()
+        if state.recent[key] and now - state.recent[key] < (interval or 0.08) then
+            state.suppressed = state.suppressed + 1
+            return
+        end
+        state.recent[key] = now
+        if state.lifetime % 250 == 0 then
+            for oldKey, last in pairs(state.recent) do
+                if now - last > 10 then state.recent[oldKey] = nil end
+            end
+        end
+    end
+
+    state.lifetime = state.lifetime + 1
+    state.stats[category] = (state.stats[category] or 0) + 1
+    local kind = eventType or tostring(message):match("^([%w_%.]+)") or category
+    state.eventTypes[kind] = (state.eventTypes[kind] or 0) + 1
+    local event = {
+        category = category,
+        text = string.format("[#%05d %s.%03d] [%s] %s", state.lifetime,
+            os.date("%H:%M:%S"), math.floor(os.clock() % 1 * 1000),
+            category, tostring(message)),
+    }
+    if state.count < MAX_LINES then
+        local position = (state.head + state.count - 1) % MAX_LINES + 1
+        state.entries[position] = event
+        state.count = state.count + 1
+    else
+        state.entries[state.head] = event
+        state.head = state.head % MAX_LINES + 1
+        state.overwritten = state.overwritten + 1
+    end
+    state.dirty = true
+end
+
+local function getEntries(filter, maxVisible)
+    local lines = {}
+    for i = state.count - 1, 0, -1 do
+        local index = (state.head + i - 1) % MAX_LINES + 1
+        local item = state.entries[index]
+        if item and (filter == "ALL" or item.category == filter) then
+            lines[#lines + 1] = item.text
+            if maxVisible and #lines >= maxVisible then break end
+        end
+    end
+    for left = 1, math.floor(#lines / 2) do
+        local right = #lines - left + 1
+        lines[left], lines[right] = lines[right], lines[left]
+    end
+    return lines
+end
+
+local function report()
+    local totals, types = {}, {}
+    for name, count in pairs(state.eventTypes) do
+        types[#types + 1] = {name = name, count = count}
+    end
+    table.sort(types, function(a, b)
+        if a.count == b.count then return a.name < b.name end
+        return a.count > b.count
+    end)
+    local frequent = {}
+    for i = 1, math.min(#types, 20) do
+        frequent[#frequent + 1] = types[i].name .. "=" .. types[i].count
+    end
+    for _, category in ipairs(CATEGORIES) do
+        if category ~= "ALL" then
+            table.insert(totals, category .. "=" .. (state.stats[category] or 0))
+        end
+    end
+    return table.concat({
+        "MORANTXHUB UNIVERSAL GAME LOGGER v2.1 | CLIENT-OBSERVED SESSION",
+        "Game: " .. tostring(state.gameName),
+        "PlaceId: " .. tostring(game.PlaceId) .. " | UniverseId: " .. tostring(game.GameId),
+        "Exported at: " .. os.date("%Y-%m-%d %H:%M:%S"),
+        "Recorded events: " .. state.lifetime .. " | Stored: " .. state.count,
+        "Overwritten: " .. state.overwritten .. " | Rate-limited: " .. state.suppressed,
+        "Category counts: " .. table.concat(totals, " | "),
+        "Top event types: " .. (#frequent > 0 and table.concat(frequent, " | ") or "none"),
+        "Watched: GUI " .. state.guiWatched .. ", remotes " .. state.remoteCount ..
+            ", interactions " .. state.interactCount .. ", audio " .. state.audioCount,
+        "Watch limits hit: " .. table.concat({"GUI=" .. state.watchLimits.GUI,
+            "REMOTE=" .. state.watchLimits.REMOTE,
+            "INTERACT=" .. state.watchLimits.INTERACT,
+            "AUDIO=" .. state.watchLimits.AUDIO}, " | "),
+        "Outgoing remote hook: " .. (state.remoteSupported and "available" or "unavailable"),
+        "Incoming RemoteEvent listeners: " .. tostring(state.remoteCount),
+        "Remote argument values: " .. (state.capture.ARGS and "ON (review before sharing)" or "OFF (types only)"),
+        "Most recent action: " .. state.lastInteraction,
+        "--- LOG START (oldest to newest) ---",
+        table.concat(getEntries("ALL"), "\n"),
+        "--- LOG END ---",
+    }, "\n")
+end
+
+local function instance(className, properties, parent)
+    local object = Instance.new(className)
+    for k, v in pairs(properties or {}) do object[k] = v end
+    object.Parent = parent
+    return object
+end
+
+local function round(target, radius)
+    instance("UICorner", {CornerRadius = UDim.new(0, radius)}, target)
+    return target
+end
+
+local function outline(target)
+    instance("UIStroke", {Color = COLORS.line, Thickness = 1}, target)
+    return target
+end
+
+local function textLabel(parent, text, size, color)
+    return instance("TextLabel", {
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = color or COLORS.foreground,
+        TextSize = size or 13,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+end
+
+local function button(parent, title, position, size, background)
+    local b = instance("TextButton", {
+        Text = title,
+        Position = position,
+        Size = size,
+        BackgroundColor3 = background or COLORS.elevated,
+        TextColor3 = COLORS.foreground,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        AutoButtonColor = true,
+        BorderSizePixel = 0,
+    }, parent)
+    round(b, 7)
+    return b
+end
+
+local gui = instance("ScreenGui", {
+    Name = "MorantxHub_UniversalGameLogger_Local",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder = 2147483000,
+})
+local parented = false
+if type(gethui) == "function" then
+    local ok, result = pcall(gethui)
+    if ok and result then
+        parented = pcall(function() gui.Parent = result end)
+    end
+end
+if not parented then
+    parented = pcall(function() gui.Parent = CoreGui end)
+end
+if not parented then
+    gui.Parent = PlayerGui
+end
+if type(protectgui) == "function" then pcall(protectgui, gui) end
+
+local main = round(instance("Frame", {
+    Name = "RecorderWindow",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(675, 530),
+    BackgroundColor3 = COLORS.background,
+    BorderSizePixel = 0,
+    Active = true,
+}, gui), 11)
+outline(main)
+local uiScale = instance("UIScale", {Scale = 1}, main)
+
+local topbar = instance("Frame", {
+    Name = "Header",
+    Size = UDim2.new(1, 0, 0, 55),
+    BackgroundColor3 = COLORS.surface,
+    BorderSizePixel = 0,
+    Active = true,
+}, main)
+round(topbar, 11)
+local title = textLabel(topbar, "MORANTXHUB  /  GAME LOGGER", 17)
+title.Font = Enum.Font.GothamBold
+title.Position = UDim2.fromOffset(17, 7)
+title.Size = UDim2.new(1, -130, 0, 24)
+local subtitle = textLabel(topbar, "Client event capture  |  F8: show / hide", 11, COLORS.muted)
+subtitle.Position = UDim2.fromOffset(18, 32)
+subtitle.Size = UDim2.new(1, -130, 0, 15)
+
+local minimizeButton = button(topbar, "_", UDim2.new(1, -82, 0, 11), UDim2.fromOffset(30, 30))
+minimizeButton.TextSize = 19
+local closeButton = button(topbar, "X", UDim2.new(1, -45, 0, 11), UDim2.fromOffset(30, 30), COLORS.red)
+closeButton.TextSize = 14
+local compactButton = button(gui, "LOG", UDim2.new(1, -14, 0.5, 0),
+    UDim2.fromOffset(58, 58), COLORS.accent)
+compactButton.AnchorPoint = Vector2.new(1, 0.5)
+compactButton.TextSize = 14
+compactButton.Visible = false
+compactButton.Active = true
+compactButton.TextColor3 = COLORS.background
+compactButton.Font = Enum.Font.GothamBold
+
+local statsPanel = round(instance("Frame", {
+    Position = UDim2.fromOffset(14, 67), Size = UDim2.new(1, -28, 0, 65),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+}, main), 8)
+local statsTop = textLabel(statsPanel, "Waiting for events...", 14)
+statsTop.Font = Enum.Font.GothamBold
+statsTop.Position = UDim2.fromOffset(12, 6)
+statsTop.Size = UDim2.new(1, -24, 0, 23)
+local statsBottom = textLabel(statsPanel, "", 11, COLORS.muted)
+statsBottom.Position = UDim2.fromOffset(12, 32)
+statsBottom.Size = UDim2.new(1, -24, 0, 22)
+
+local tools = instance("Frame", {
+    Position = UDim2.fromOffset(14, 143), Size = UDim2.new(1, -28, 0, 34),
+    BackgroundTransparency = 1,
+}, main)
+local copyButton = button(tools, "COPY ALL", UDim2.fromOffset(0, 0), UDim2.fromOffset(120, 34), COLORS.accent)
+copyButton.TextColor3 = COLORS.background
+copyButton.Font = Enum.Font.GothamBold
+local saveButton = button(tools, "SAVE TXT", UDim2.fromOffset(128, 0), UDim2.fromOffset(116, 34), COLORS.green)
+saveButton.TextColor3 = COLORS.background
+saveButton.Font = Enum.Font.GothamBold
+local clearButton = button(tools, "CLEAR", UDim2.fromOffset(252, 0), UDim2.fromOffset(85, 34))
+local pauseButton = button(tools, "PAUSE", UDim2.fromOffset(345, 0), UDim2.fromOffset(85, 34))
+local filterButton = button(tools, "FILTER: ALL", UDim2.fromOffset(438, 0), UDim2.new(1, -438, 0, 34))
+
+local toggles = instance("Frame", {
+    Position = UDim2.fromOffset(14, 184), Size = UDim2.new(1, -28, 0, 66),
+    BackgroundTransparency = 1,
+}, main)
+local toggleDefinitions = {
+    {"GUI", "GUI"}, {"INPUT", "INPUT"}, {"INTERACT", "INTERACT"},
+    {"TOOL", "TOOLS"}, {"CHARACTER", "CHAR"}, {"REMOTE", "REMOTE"}, {"ARGS", "ARGS"},
+    {"PLAYER", "PLAYER"}, {"WORLD", "WORLD"}, {"AUDIO", "AUDIO"},
+}
+local toggleButtons = {}
+for i, pair in ipairs(toggleDefinitions) do
+    local key, caption = pair[1], pair[2]
+    local row = math.floor((i - 1) / 7)
+    local column = (i - 1) % 7
+    local b = button(toggles, caption, UDim2.new(column / 7, 2, 0, row * 34),
+        UDim2.new(1 / 7, -5, 0, 30))
+    toggleButtons[key] = b
+end
+
+local viewport = round(instance("ScrollingFrame", {
+    Name = "LogScroller",
+    Position = UDim2.fromOffset(14, 257),
+    Size = UDim2.new(1, -28, 0, 218),
+    BackgroundColor3 = COLORS.surface,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 5,
+    ScrollBarImageColor3 = COLORS.accent,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(),
+}, main), 8)
+local logText = instance("TextLabel", {
+    Name = "Entries",
+    Position = UDim2.fromOffset(10, 9),
+    Size = UDim2.new(1, -28, 0, 25),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    Text = "Log is ready. Interact with the game to begin.",
+    TextColor3 = COLORS.foreground,
+    Font = Enum.Font.Code,
+    TextSize = 13,
+    TextWrapped = false,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+}, viewport)
+local footer = textLabel(main,
+    "Logs stay on your device. ARG values OFF by default; review before sharing.",
+    11, COLORS.muted)
+footer.Position = UDim2.fromOffset(18, 484)
+footer.Size = UDim2.new(1, -36, 0, 33)
+
+local exportFrame = round(instance("Frame", {
+    Visible = false,
+    Position = UDim2.new(0, 15, 0, 60),
+    Size = UDim2.new(1, -30, 1, -75),
+    BackgroundColor3 = COLORS.surface,
+    BorderSizePixel = 0,
+    ZIndex = 20,
+}, main), 8)
+local exportHeader = textLabel(exportFrame, "Clipboard unavailable: select and copy this text manually", 13)
+exportHeader.Position = UDim2.fromOffset(12, 10)
+exportHeader.Size = UDim2.new(1, -110, 0, 27)
+exportHeader.ZIndex = 21
+local exportClose = button(exportFrame, "BACK", UDim2.new(1, -88, 0, 9), UDim2.fromOffset(76, 30))
+exportClose.ZIndex = 21
+local exportBox = instance("TextBox", {
+    Position = UDim2.fromOffset(11, 47),
+    Size = UDim2.new(1, -22, 1, -58),
+    ClearTextOnFocus = false,
+    MultiLine = true,
+    TextEditable = true,
+    BackgroundColor3 = COLORS.background,
+    TextColor3 = COLORS.foreground,
+    Font = Enum.Font.Code,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    TextWrapped = false,
+    Text = "",
+    ZIndex = 21,
+}, exportFrame)
+round(exportBox, 6)
+
+local function updateScale()
+    local camera = Workspace.CurrentCamera
+    if not camera then return end
+    local size = camera.ViewportSize
+    uiScale.Scale = math.clamp(math.min((size.X - 18) / 675, (size.Y - 24) / 530), 0.34, 1)
+end
+updateScale()
+if Workspace.CurrentCamera then
+    bind(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale)
+end
+bind(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+    updateScale()
+    if Workspace.CurrentCamera then
+        bind(Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale)
+    end
+end)
+
+local dragging = false
+local dragStart, windowStart
+bind(topbar.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging, dragStart, windowStart = true, input.Position, main.Position
+        bind(input.Changed, function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+bind(UserInputService.InputChanged, function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(windowStart.X.Scale, windowStart.X.Offset + delta.X,
+            windowStart.Y.Scale, windowStart.Y.Offset + delta.Y)
+    end
+end)
+
+local regularSize = UDim2.fromOffset(675, 530)
+local minimizedSize = UDim2.fromOffset(380, 55)
+local contents = {statsPanel, tools, toggles, viewport, footer, exportFrame}
+
+local function restoreWindow()
+    state.closed = false
+    state.minimized = false
+    main.Size = regularSize
+    for _, element in ipairs(contents) do
+        element.Visible = element ~= exportFrame
+    end
+    minimizeButton.Text = "_"
+    main.Visible = true
+    compactButton.Visible = false
+    state.dirty = true
+end
+
+local function setMinimized(value)
+    state.closed = false
+    state.minimized = value
+    main.Size = value and minimizedSize or regularSize
+    for _, element in ipairs(contents) do
+        element.Visible = not value and element ~= exportFrame
+    end
+    minimizeButton.Text = value and "+" or "_"
+    main.Visible = true
+    compactButton.Visible = false
+    state.dirty = true
+end
+
+local function setClosed(value)
+    if not value then restoreWindow() return end
+    state.closed = true
+    state.minimized = false
+    main.Visible = false
+    compactButton.Visible = true
+    state.dirty = true
+end
+
+local floatingDrag, floatingStart, floatingPosition, floatingMoved
+bind(minimizeButton.Activated, function()
+    addEntry("SYSTEM", state.minimized and "LOGGER_RESTORE_FROM_MINIMIZE" or "LOGGER_MINIMIZE")
+    setMinimized(not state.minimized)
+end)
+bind(closeButton.Activated, function()
+    addEntry("SYSTEM", "LOGGER_CLOSE_WINDOW (capture still running)")
+    setClosed(true)
+end)
+bind(compactButton.Activated, function()
+    if floatingMoved then floatingMoved = false return end
+    addEntry("SYSTEM", "LOGGER_REOPEN_FLOATING_BUTTON")
+    restoreWindow()
+end)
+bind(exportClose.Activated, function() exportFrame.Visible = false end)
+
+bind(compactButton.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        floatingDrag = true
+        floatingMoved = false
+        floatingStart = input.Position
+        floatingPosition = compactButton.Position
+        bind(input.Changed, function()
+            if input.UserInputState == Enum.UserInputState.End then floatingDrag = false end
+        end)
+    end
+end)
+bind(UserInputService.InputChanged, function(input)
+    if floatingDrag and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - floatingStart
+        if delta.Magnitude > 7 then
+            floatingMoved = true
+            local camera = Workspace.CurrentCamera
+            local viewportSize = camera and camera.ViewportSize or Vector2.new(800, 600)
+            local newX = math.clamp(floatingPosition.X.Offset + delta.X,
+                -viewportSize.X + 70, -7)
+            local newY = math.clamp(floatingPosition.Y.Offset + delta.Y,
+                -viewportSize.Y * 0.5 + 40, viewportSize.Y * 0.5 - 40)
+            compactButton.Position = UDim2.new(floatingPosition.X.Scale,
+                newX, floatingPosition.Y.Scale, newY)
+        end
+    end
+end)
+
+local function copyText(content)
+    for _, fnName in ipairs({"setclipboard", "toclipboard"}) do
+        local fn = ENV[fnName] or _G[fnName]
+        if type(fn) == "function" then
+            local ok = pcall(fn, content)
+            if ok then return true end
+        end
+    end
+    return false
+end
+
+bind(copyButton.Activated, function()
+    local content = report()
+    if copyText(content) then
+        addEntry("SYSTEM", "Report copied locally (" .. tostring(#content) .. " characters)")
+        copyButton.Text = "COPIED!"
+        task.delay(1.4, function()
+            if state.alive then copyButton.Text = "COPY ALL" end
+        end)
+    else
+        exportBox.Text = content
+        exportFrame.Visible = true
+        addEntry("SYSTEM", "Clipboard unsupported; manual export opened")
+        pcall(function() exportBox:CaptureFocus() end)
+    end
+end)
+
+local function exportStatus(titleText, content)
+    exportHeader.Text = titleText
+    exportBox.Text = content
+    exportFrame.Visible = true
+end
+
+local function saveReportTxt()
+    local writer = ENV.writefile or _G.writefile or writefile
+    if type(writer) ~= "function" then
+        exportStatus("SAVE TXT UNAVAILABLE", "Your executor does not expose writefile().\n\nUse COPY ALL, or switch to an executor that supports saving workspace files.")
+        addEntry("SYSTEM", "SAVE_TXT_UNAVAILABLE writefile() not supported")
+        return nil
+    end
+
+    local safeGameName = tostring(state.gameName or "Game")
+        :gsub("[^%w%s%-_]", "")
+        :gsub("%s+", "_")
+        :gsub("^_+", "")
+        :gsub("_+$", "")
+        :sub(1, 40)
+    if safeGameName == "" then safeGameName = "Game" end
+    state.saveSequence = (state.saveSequence or 0) + 1
+    local prefix = "MorantxHub_" .. safeGameName .. "_" .. tostring(game.PlaceId) ..
+        "_" .. os.date("%Y%m%d_%H%M%S")
+    local function fileName()
+        return prefix .. "_" .. tostring(state.saveSequence) .. ".txt"
+    end
+    local filename = fileName()
+    local fileExists = ENV.isfile or _G.isfile or isfile
+    if type(fileExists) == "function" then
+        for _ = 1, 100 do
+            local ok, exists = pcall(fileExists, filename)
+            if not ok or not exists then break end
+            state.saveSequence = state.saveSequence + 1
+            filename = fileName()
+        end
+    end
+
+    local entryCount = state.count
+    local content = report()
+    local ok, err = pcall(writer, filename, content)
+    if not ok then
+        exportStatus("SAVE TXT FAILED", "File: " .. filename .. "\n\n" .. tostring(err))
+        addEntry("SYSTEM", "SAVE_TXT_FAILED: " .. tostring(err))
+        return nil
+    end
+
+    local reader = ENV.readfile or _G.readfile or readfile
+    if type(reader) == "function" then
+        local readOK, savedContent = pcall(reader, filename)
+        if not readOK or savedContent ~= content then
+            exportStatus("SAVE TXT COULD NOT BE VERIFIED",
+                "File: " .. filename .. "\n\nThe executor reported saving, but readback did not match the complete report. Check the file before uploading it.")
+            addEntry("SYSTEM", "SAVE_TXT_READBACK_MISMATCH file=" .. filename)
+            return nil
+        end
+    end
+
+    exportStatus("TXT SAVED TO EXECUTOR WORKSPACE",
+        "Filename: " .. filename ..
+        "\n\nSaved events: " .. tostring(entryCount) ..
+        "\nFile bytes: " .. tostring(#content) ..
+        "\n\nOpen your executor's workspace/files directory, locate this file, and upload it to ChatGPT." ..
+        "\n\nThe file ends with --- LOG END ---. Rate-limited and overwritten events cannot be recovered.")
+    addEntry("SYSTEM", "SAVE_TXT_SUCCESS file=" .. filename ..
+        " savedEvents=" .. tostring(entryCount) .. " bytes=" .. tostring(#content))
+    saveButton.Text = "SAVED!"
+    task.delay(1.5, function()
+        if state.alive then saveButton.Text = "SAVE TXT" end
+    end)
+    return filename
+end
+
+bind(saveButton.Activated, saveReportTxt)
+
+bind(clearButton.Activated, function()
+    state.entries, state.head, state.count = {}, 1, 0
+    state.lifetime, state.overwritten, state.suppressed = 0, 0, 0
+    state.recent = {}
+    state.eventTypes = {}
+    for category in pairs(state.stats) do state.stats[category] = 0 end
+    addEntry("SYSTEM", "Log cleared by user")
+end)
+
+bind(pauseButton.Activated, function()
+    state.paused = not state.paused
+    pauseButton.Text = state.paused and "RESUME" or "PAUSE"
+    addEntry("SYSTEM", state.paused and "Recording paused" or "Recording resumed")
+end)
+
+bind(filterButton.Activated, function()
+    local index = table.find(CATEGORIES, state.filter) or 1
+    state.filter = CATEGORIES[index % #CATEGORIES + 1]
+    filterButton.Text = "FILTER: " .. state.filter
+    state.dirty = true
+end)
+
+local function updateToggles()
+    for key, b in pairs(toggleButtons) do
+        local enabled = state.capture[key]
+        b.BackgroundColor3 = enabled and COLORS.elevated or COLORS.background
+        b.TextColor3 = enabled and COLORS.green or COLORS.muted
+        local caption = key == "CHARACTER" and "CHAR" or
+            (key == "INTERACT" and "INTERACT" or
+            (key == "TOOL" and "TOOLS" or key))
+        b.Text = caption .. (enabled and " ON" or " OFF")
+    end
+    footer.Text = (state.capture.ARGS and
+        "ARG values ON — review private data before sharing. " or
+        "ARG values OFF — type summaries only. ") ..
+        (state.remoteSupported and "Remote hook ready." or "Remote hook unavailable.")
+end
+for key, b in pairs(toggleButtons) do
+    bind(b.Activated, function()
+        state.capture[key] = not state.capture[key]
+        updateToggles()
+        addEntry("SYSTEM", key .. " capture " .. (state.capture[key] and "enabled" or "disabled"))
+    end)
+end
+updateToggles()
+
+local function refreshDisplay()
+    if not state.alive then return end
+    if not state.dirty then return end
+    state.dirty = false
+    local stats = state.stats
+    statsTop.Text = string.format("EVENTS %d   GUI %d   REMOTE %d   INTERACT %d   INPUT %d",
+        state.lifetime, stats.GUI, stats.REMOTE, stats.INTERACT, stats.INPUT)
+    statsBottom.Text = string.format(
+        "Tool %d  Char %d  Player %d  World %d  Audio %d  Kept %d/%d  Skipped %d  %s",
+        stats.TOOL, stats.CHARACTER, stats.PLAYER, stats.WORLD, stats.AUDIO,
+        state.count, MAX_LINES, state.overwritten + state.suppressed,
+        state.paused and "PAUSED" or "LIVE")
+    local view = getEntries(state.filter, MAX_ON_SCREEN)
+    logText.Text = #view > 0 and table.concat(view, "\n") or
+        "No entries in this filter yet. Try interacting with the game."
+    task.defer(function()
+        if not state.alive or state.minimized then return end
+        local bottom = math.max(0, viewport.AbsoluteCanvasSize.Y - viewport.AbsoluteWindowSize.Y)
+        viewport.CanvasPosition = Vector2.new(0, bottom)
+    end)
+end
+
+task.spawn(function()
+    while state.alive do
+        if not state.minimized and not state.closed then refreshDisplay() end
+        task.wait(0.33)
+    end
+end)
+
+local function isOurGui(obj)
+    return obj == gui or obj:IsDescendantOf(gui)
+end
+
+local function shouldWatchVisibility(obj)
+    if not obj:IsA("GuiObject") or obj:IsA("TextLabel") then
+        return false
+    end
+    local name = obj.Name:lower()
+    if name:find("menu", 1, true) or name:find("panel", 1, true)
+        or name:find("shop", 1, true) or name:find("popup", 1, true)
+        or name:find("window", 1, true) or name:find("dialog", 1, true)
+        or name:find("inventory", 1, true) or name:find("trade", 1, true)
+        or name:find("quest", 1, true) then
+        return true
+    end
+    local depth, current = 0, obj
+    while current and current ~= PlayerGui and depth <= 5 do
+        if current:IsA("ScreenGui") then return depth <= 12 end
+        current, depth = current.Parent, depth + 1
+    end
+    return false
+end
+
+local function unwatchGui(obj)
+    local owned = state.trackedGui[obj]
+    if not owned then return end
+    for _, connection in ipairs(owned) do pcall(function() connection:Disconnect() end) end
+    state.trackedGui[obj] = nil
+    state.guiWatched = math.max(0, state.guiWatched - 1)
+end
+
+local function watchGui(obj)
+    if not state.alive or state.trackedGui[obj] or isOurGui(obj) then return end
+    if state.guiWatched >= MAX_GUI_WATCHES then
+        state.watchLimits.GUI = state.watchLimits.GUI + 1
+        return
+    end
+    local observe = obj:IsA("ScreenGui") or obj:IsA("GuiButton") or
+        obj:IsA("TextBox") or shouldWatchVisibility(obj)
+    if not observe then return end
+    state.trackedGui[obj] = {}
+    state.guiWatched = state.guiWatched + 1
+
+    if obj:IsA("ScreenGui") then
+        bind(obj.Destroying, function()
+            addEntry("GUI", "MENU_DESTROYED name=" .. quoteString(obj.Name)
+                .. " path=" .. instancePath(obj))
+        end, obj)
+        bind(obj:GetPropertyChangedSignal("Enabled"), function()
+            addEntry("GUI", (obj.Enabled and "MENU_OPEN " or "MENU_CLOSE ")
+                .. "name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+        end, obj)
+    end
+    if obj:IsA("GuiButton") then
+        bind(obj.Activated, function(_, clickCount)
+            local label = ""
+            if obj:IsA("TextButton") then label = obj.Text end
+            if label == "" then
+                local child = obj:FindFirstChildWhichIsA("TextLabel", true)
+                if child then label = child.Text end
+            end
+            if label == "" then label = obj.Name end
+            local action = "BUTTON_PRESS label=" .. quoteString(label)
+                .. " name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj)
+                .. " clickCount=" .. tostring(clickCount or 0)
+            state.lastInteraction = action
+            addEntry("GUI", action, nil, nil, "BUTTON_PRESS")
+        end, obj)
+    end
+    if obj:IsA("GuiObject") and not obj:IsA("GuiButton") then
+        bind(obj.InputBegan, function(input)
+            if obj.Active and (input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                addEntry("GUI", "CUSTOM_UI_PRESS name=" .. quoteString(obj.Name)
+                    .. " path=" .. instancePath(obj), instancePath(obj) .. ":tap", 0.2)
+            end
+        end, obj)
+    end
+    if obj:IsA("TextBox") then
+        bind(obj.Focused, function()
+            addEntry("GUI", "TEXTBOX_FOCUS name=" .. quoteString(obj.Name)
+                .. " path=" .. instancePath(obj) .. " (content hidden)")
+        end, obj)
+        bind(obj.FocusLost, function(submitted)
+            addEntry("GUI", "TEXTBOX_BLUR name=" .. quoteString(obj.Name)
+                .. " path=" .. instancePath(obj)
+                .. " enter=" .. tostring(submitted) .. " (content hidden)")
+        end, obj)
+    end
+    if obj:IsA("TextButton") then
+        local priorText = obj.Text
+        bind(obj:GetPropertyChangedSignal("Text"), function()
+            local current = obj.Text
+            if priorText ~= current then
+                addEntry("GUI", "BUTTON_LABEL_CHANGE name=" .. quoteString(obj.Name)
+                    .. " old=" .. quoteString(priorText)
+                    .. " new=" .. quoteString(current)
+                    .. " path=" .. instancePath(obj), instancePath(obj) .. ":text", 0.25)
+                priorText = current
+            end
+        end, obj)
+    end
+    if shouldWatchVisibility(obj) then
+        bind(obj:GetPropertyChangedSignal("Visible"), function()
+            addEntry("GUI", (obj.Visible and "UI_SHOW " or "UI_HIDE ")
+                .. "name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+        end, obj)
+    end
+end
+
+local firstGui = PlayerGui:GetDescendants()
+for _, child in ipairs(firstGui) do
+    if child:IsA("GuiButton") or child:IsA("ScreenGui") then watchGui(child) end
+end
+for _, child in ipairs(firstGui) do watchGui(child) end
+for _, child in ipairs(firstGui) do
+    if child:IsA("ScreenGui") then
+        addEntry("GUI", (child.Enabled and "MENU_INITIAL_OPEN " or "MENU_INITIAL_CLOSED ")
+            .. "name=" .. quoteString(child.Name) .. " path=" .. instancePath(child))
+    end
+end
+bind(PlayerGui.DescendantAdded, function(child) watchGui(child) end)
+bind(PlayerGui.DescendantRemoving, function(child) unwatchGui(child) end)
+
+local function watchTool(tool)
+    if not tool:IsA("Tool") or state.trackedTools[tool] then return end
+    state.trackedTools[tool] = true
+    bind(tool.Equipped, function() addEntry("TOOL", "EQUIP " .. instancePath(tool)) end)
+    bind(tool.Unequipped, function() addEntry("TOOL", "UNEQUIP " .. instancePath(tool)) end)
+    bind(tool.Activated, function()
+        local action = "TOOL_ACTIVATE name=" .. quoteString(tool.Name) .. " path=" .. instancePath(tool)
+        state.lastInteraction = action
+        addEntry("TOOL", action)
+    end)
+    bind(tool.Deactivated, function()
+        addEntry("TOOL", "TOOL_DEACTIVATE " .. instancePath(tool))
+    end)
+end
+
+local backpack = LocalPlayer:WaitForChild("Backpack")
+for _, child in ipairs(backpack:GetChildren()) do watchTool(child) end
+bind(backpack.ChildAdded, function(obj)
+    watchTool(obj)
+    addEntry("TOOL", "BACKPACK_ADD name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+end)
+bind(backpack.ChildRemoved, function(obj)
+    addEntry("TOOL", "BACKPACK_REMOVE name=" .. quoteString(obj.Name) .. " path=" .. instancePath(obj))
+end)
+
+local function onCharacter(character)
+    addEntry("CHARACTER", "CHARACTER SPAWN " .. instancePath(character))
+    for _, child in ipairs(character:GetChildren()) do watchTool(child) end
+    bind(character.ChildAdded, function(child)
+        watchTool(child)
+        if child:IsA("Tool") then
+            addEntry("TOOL", "CHARACTER_TOOL_EQUIPPED name=" .. quoteString(child.Name))
+        end
+    end)
+    bind(character.ChildRemoved, function(child)
+        if child:IsA("Tool") then
+            addEntry("TOOL", "CHARACTER_TOOL_REMOVED name=" .. quoteString(child.Name))
+        end
+    end)
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+    bind(humanoid.Died, function() addEntry("CHARACTER", "DIED") end)
+    bind(humanoid.StateChanged, function(_, nextState)
+        if nextState == Enum.HumanoidStateType.Jumping
+            or nextState == Enum.HumanoidStateType.Freefall
+            or nextState == Enum.HumanoidStateType.Landed
+            or nextState == Enum.HumanoidStateType.Seated
+            or nextState == Enum.HumanoidStateType.Swimming
+            or nextState == Enum.HumanoidStateType.Climbing then
+            addEntry("CHARACTER", "STATE " .. nextState.Name, nextState.Name, 0.3)
+        end
+    end)
+    local lastHealth = humanoid.Health
+    bind(humanoid.HealthChanged, function(health)
+        if math.abs(health - lastHealth) >= 1 or health <= 0 then
+            lastHealth = health
+            addEntry("CHARACTER", string.format("HEALTH %.1f / %.1f", health, humanoid.MaxHealth),
+                "health", 0.3)
+        end
+    end)
+end
+bind(LocalPlayer.CharacterRemoving, function(character)
+    addEntry("CHARACTER", "CHARACTER_REMOVING " .. instancePath(character))
+end)
+bind(LocalPlayer.CharacterAdded, onCharacter)
+if LocalPlayer.Character then task.spawn(onCharacter, LocalPlayer.Character) end
+
+bind(ProximityPromptService.PromptShown, function(prompt)
+    addEntry("INTERACT", "PROMPT SHOW " .. instancePath(prompt)
+        .. " action=" .. quoteString(prompt.ActionText), instancePath(prompt), 0.12)
+end)
+bind(ProximityPromptService.PromptHidden, function(prompt)
+    addEntry("INTERACT", "PROMPT HIDE " .. instancePath(prompt), instancePath(prompt), 0.12)
+end)
+bind(ProximityPromptService.PromptTriggered, function(prompt, who)
+    if who == LocalPlayer then
+        addEntry("INTERACT", "PROMPT TRIGGER " .. instancePath(prompt)
+            .. " action=" .. quoteString(prompt.ActionText))
+    end
+end)
+bind(ProximityPromptService.PromptButtonHoldBegan, function(prompt, who)
+    if who == LocalPlayer then addEntry("INTERACT", "PROMPT HOLD START " .. instancePath(prompt)) end
+end)
+bind(ProximityPromptService.PromptButtonHoldEnded, function(prompt, who)
+    if who == LocalPlayer then addEntry("INTERACT", "PROMPT HOLD END " .. instancePath(prompt)) end
+end)
+
+local mouse = LocalPlayer:GetMouse()
+bind(UserInputService.InputBegan, function(input, gameProcessed)
+    if not state.alive then return end
+    if input.KeyCode == Enum.KeyCode.F8 and not UserInputService:GetFocusedTextBox() then
+        if state.closed or state.minimized then restoreWindow() else setClosed(true) end
+    end
+    if UserInputService:GetFocusedTextBox() then return end
+    local inputType = input.UserInputType
+    if inputType == Enum.UserInputType.Keyboard then
+        if input.KeyCode ~= Enum.KeyCode.Unknown then
+            addEntry("INPUT", "KEY_DOWN " .. input.KeyCode.Name
+                .. " processed=" .. tostring(gameProcessed))
+        end
+    elseif inputType.Name:find("Gamepad", 1, true) then
+        addEntry("INPUT", "GAMEPAD_DOWN " .. input.KeyCode.Name
+            .. " processed=" .. tostring(gameProcessed))
+    elseif inputType == Enum.UserInputType.MouseButton1
+        or inputType == Enum.UserInputType.MouseButton2 then
+        local target = mouse.Target
+        if not gameProcessed then
+            addEntry("INPUT", (inputType == Enum.UserInputType.MouseButton1 and
+                "MOUSE_LEFT_DOWN" or "MOUSE_RIGHT_DOWN") .. " target=" ..
+                (target and instancePath(target) or "none"), "click", 0.02)
+        end
+        if target and not gameProcessed then
+            local cursor = target
+            for _ = 1, 6 do
+                if not cursor then break end
+                local detector = cursor:FindFirstChildOfClass("ClickDetector")
+                if detector then
+                    addEntry("INTERACT", "CLICK_DETECTOR_TARGET " .. instancePath(detector)
+                        .. " target=" .. instancePath(target))
+                    break
+                end
+                cursor = cursor.Parent
+            end
+        end
+    elseif inputType == Enum.UserInputType.Touch then
+        addEntry("INPUT", "TOUCH_BEGIN processed=" .. tostring(gameProcessed), "touch", 0.1)
+    end
+end)
+
+state.onRemote = function(remote, method, count, args)
+    local pieces = {}
+    for i = 1, math.min(count, 7) do
+        local value = args[i]
+        if state.capture.ARGS then
+            table.insert(pieces, summarizeValue(value, 0, {}))
+        else
+            table.insert(pieces, typeof(value))
+        end
+    end
+    if count > 7 then table.insert(pieces, "... +" .. (count - 7) .. " args") end
+    local path = instancePath(remote)
+    addEntry("REMOTE", "REMOTE_" .. method .. " name=" .. quoteString(remote.Name)
+        .. " path=" .. path .. " args=(" .. table.concat(pieces, ", ") .. ")",
+        path .. ":" .. method, 0.035, "REMOTE_" .. method)
+end
+
+local canHook = type(hookmetamethod) == "function" and
+    type(getnamecallmethod) == "function"
+state.remoteSupported = canHook or (ENV.__MorantActionRecorderHook == true)
+ENV.MorantActionRecorder = state
+
+if canHook and not ENV.__MorantActionRecorderHook then
+    local wrap = type(newcclosure) == "function" and newcclosure or function(fn) return fn end
+    local oldNamecall
+    local success = pcall(function()
+        oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+            local method = getnamecallmethod()
+            if method == "FireServer" or method == "InvokeServer" then
+                local kind = typeof(self) == "Instance" and self.ClassName or ""
+                if kind == "RemoteEvent" or kind == "RemoteFunction" then
+                    local current = ENV.MorantActionRecorder
+                    if current and current.alive and current.capture.REMOTE then
+                        local argc, arguments = select("#", ...), {...}
+                        pcall(current.onRemote, self, method, argc, arguments)
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end))
+    end)
+    if success and oldNamecall then
+        ENV.__MorantActionRecorderHook = true
+        state.remoteSupported = true
+    else
+        state.remoteSupported = false
+    end
+end
+
+
+local function releaseOwned(map, object, counter)
+    local connections = map[object]
+    if not connections then return end
+    for _, connection in ipairs(connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    map[object] = nil
+    if counter then state[counter] = math.max(0, state[counter] - 1) end
+end
+
+local function bindOwned(map, object, signal, callback)
+    local ok, connection = pcall(function() return signal:Connect(callback) end)
+    if ok and connection then
+        map[object] = map[object] or {}
+        table.insert(map[object], connection)
+        return connection
+    end
+    return nil
+end
+
+local function describeArgs(argc, args)
+    local pieces = {}
+    for i = 1, math.min(argc, 7) do
+        local value = args[i]
+        pieces[#pieces + 1] = state.capture.ARGS and summarizeValue(value, 0, {}) or typeof(value)
+    end
+    if argc > 7 then pieces[#pieces + 1] = "... +" .. (argc - 7) .. " args" end
+    return table.concat(pieces, ", ")
+end
+
+local function watchRemote(object)
+    if state.trackedRemotes[object] then return end
+    if not (object:IsA("RemoteEvent") or object:IsA("UnreliableRemoteEvent")) then return end
+    if state.remoteCount >= MAX_REMOTE_WATCHES then
+        state.watchLimits.REMOTE = state.watchLimits.REMOTE + 1
+        return
+    end
+    state.trackedRemotes[object] = {}
+    state.remoteCount = state.remoteCount + 1
+    bindOwned(state.trackedRemotes, object, object.OnClientEvent, function(...)
+        local count = select("#", ...)
+        local arguments = {...}
+        local path = instancePath(object)
+        addEntry("REMOTE", "REMOTE_RECEIVE name=" .. quoteString(object.Name)
+            .. " path=" .. path .. " args=(" .. describeArgs(count, arguments) .. ")",
+            path .. ":RECEIVE", 0.035, "REMOTE_RECEIVE")
+    end)
+end
+
+local function watchWorldInteraction(object)
+    if state.trackedInteract[object] then return end
+    if not (object:IsA("ClickDetector") or object:IsA("DragDetector")) then return end
+    if state.interactCount >= MAX_INTERACT_WATCHES then
+        state.watchLimits.INTERACT = state.watchLimits.INTERACT + 1
+        return
+    end
+    state.trackedInteract[object] = {}
+    state.interactCount = state.interactCount + 1
+    if object:IsA("ClickDetector") then
+        bindOwned(state.trackedInteract, object, object.MouseClick, function(player)
+            if player == LocalPlayer then
+                local action = "CLICK_DETECTOR_PRESS path=" .. instancePath(object)
+                state.lastInteraction = action
+                addEntry("INTERACT", action)
+            end
+        end)
+        pcall(function()
+            bindOwned(state.trackedInteract, object, object.RightMouseClick, function(player)
+                if player == LocalPlayer then
+                    addEntry("INTERACT", "CLICK_DETECTOR_RIGHT_PRESS path=" .. instancePath(object))
+                end
+            end)
+        end)
+    else
+        for _, signalName in ipairs({"DragStart", "DragEnd"}) do
+            pcall(function()
+                bindOwned(state.trackedInteract, object, object[signalName], function()
+                    local action = "DRAG_" .. string.upper(signalName)
+                        .. " path=" .. instancePath(object)
+                    state.lastInteraction = action
+                    addEntry("INTERACT", action)
+                end)
+            end)
+        end
+    end
+end
+
+local function watchSound(object)
+    if not object:IsA("Sound") or state.trackedAudio[object] then return end
+    if state.audioCount >= MAX_AUDIO_WATCHES then
+        state.watchLimits.AUDIO = state.watchLimits.AUDIO + 1
+        return
+    end
+    state.trackedAudio[object] = {}
+    state.audioCount = state.audioCount + 1
+    bindOwned(state.trackedAudio, object, object.Played, function()
+        addEntry("AUDIO", "SOUND_PLAY name=" .. quoteString(object.Name)
+            .. " path=" .. instancePath(object), instancePath(object) .. ":play", 0.08)
+    end)
+    bindOwned(state.trackedAudio, object, object.Ended, function()
+        addEntry("AUDIO", "SOUND_END name=" .. quoteString(object.Name)
+            .. " path=" .. instancePath(object), instancePath(object) .. ":end", 0.08)
+    end)
+    bindOwned(state.trackedAudio, object, object.Stopped, function()
+        addEntry("AUDIO", "SOUND_STOP name=" .. quoteString(object.Name)
+            .. " path=" .. instancePath(object), instancePath(object) .. ":stop", 0.08)
+    end)
+end
+
+local function observeGameObject(object)
+    if not state.alive then return end
+    if object:IsA("RemoteEvent") or object:IsA("UnreliableRemoteEvent") then
+        watchRemote(object)
+    elseif object:IsA("ClickDetector") or object:IsA("DragDetector") then
+        watchWorldInteraction(object)
+    elseif object:IsA("Sound") then
+        watchSound(object)
+    end
+end
+
+local function unobserveGameObject(object)
+    releaseOwned(state.trackedRemotes, object, "remoteCount")
+    releaseOwned(state.trackedInteract, object, "interactCount")
+    releaseOwned(state.trackedAudio, object, "audioCount")
+end
+
+for _, root in ipairs({Workspace, ReplicatedStorage, SoundService, PlayerGui, backpack}) do
+    bind(root.DescendantAdded, function(object)
+        if isOurGui(object) then return end
+        observeGameObject(object)
+        if root == Workspace and object:IsA("Model") then
+            local lower = string.lower(object.Name)
+            if lower:find("fruit", 1, true) or lower:find("egg", 1, true)
+                or lower:find("drop", 1, true) or lower:find("crate", 1, true)
+                or lower:find("loot", 1, true) or lower:find("reward", 1, true)
+                or lower:find("pickup", 1, true) then
+                addEntry("WORLD", "NAMED_OBJECT_SPAWN name=" .. quoteString(object.Name)
+                    .. " path=" .. instancePath(object), instancePath(object), 0.2)
+            end
+        end
+    end)
+    bind(root.DescendantRemoving, function(object)
+        if root == Workspace and object:IsA("Model") then
+            local lower = string.lower(object.Name)
+            if lower:find("fruit", 1, true) or lower:find("egg", 1, true)
+                or lower:find("drop", 1, true) or lower:find("crate", 1, true)
+                or lower:find("loot", 1, true) or lower:find("reward", 1, true)
+                or lower:find("pickup", 1, true) then
+                addEntry("WORLD", "NAMED_OBJECT_REMOVED name=" .. quoteString(object.Name)
+                    .. " path=" .. instancePath(object), instancePath(object), 0.2)
+            end
+        end
+        unobserveGameObject(object)
+    end)
+end
+
+task.spawn(function()
+    local roots = {ReplicatedStorage, PlayerGui, SoundService, Workspace, backpack}
+    local maxVisits = 35000
+    for _, root in ipairs(roots) do
+        if not state.alive then return end
+        local list = root:GetDescendants()
+        for i, object in ipairs(list) do
+            if not state.alive then return end
+            state.worldScanned = state.worldScanned + 1
+            if not isOurGui(object) then observeGameObject(object) end
+            if state.worldScanned >= maxVisits then
+                addEntry("SYSTEM", "INITIAL_SCAN_LIMIT reached at " .. maxVisits ..
+                    " objects; newly created objects are still watched")
+                return
+            end
+            if i % 275 == 0 then task.wait() end
+        end
+    end
+    addEntry("SYSTEM", "INITIAL_OBJECT_SCAN_COMPLETE visited=" .. state.worldScanned)
+end)
+
+local function sensitiveKey(key)
+    key = string.lower(tostring(key))
+    return key:find("token", 1, true) or key:find("password", 1, true)
+        or key:find("cookie", 1, true) or key:find("secret", 1, true)
+        or key:find("auth", 1, true) or key:find("webhook", 1, true)
+        or key:find("sessionid", 1, true)
+end
+
+local function valueDisplay(name, value)
+    if sensitiveKey(name) then return "<redacted>" end
+    if typeof(value) == "string" and not state.capture.ARGS then
+        return "<text omitted; enable ARGS for short values>"
+    end
+    return summarizeValue(value, 0, {})
+end
+
+local function watchValue(object)
+    if state.trackedValues[object] or not object:IsA("ValueBase") then return end
+    state.trackedValues[object] = {}
+    bindOwned(state.trackedValues, object, object.Changed, function(value)
+        addEntry("PLAYER", "VALUE_CHANGED name=" .. quoteString(object.Name)
+            .. " path=" .. instancePath(object)
+            .. " value=" .. valueDisplay(object.Name, value), instancePath(object), 0.06)
+    end)
+end
+
+local function watchAttributes(object, group)
+    bind(object.AttributeChanged, function(name)
+        local value = object:GetAttribute(name)
+        addEntry(group, "ATTRIBUTE_CHANGED target=" .. instancePath(object)
+            .. " name=" .. quoteString(name) .. " value=" .. valueDisplay(name, value),
+            instancePath(object) .. ":" .. name, 0.06)
+    end)
+end
+
+watchAttributes(LocalPlayer, "PLAYER")
+for _, child in ipairs(LocalPlayer:GetDescendants()) do watchValue(child) end
+bind(LocalPlayer.DescendantAdded, function(child)
+    watchValue(child)
+    if child:IsA("ScreenGui") and not isOurGui(child) then
+        addEntry("GUI", "MENU_CREATED name=" .. quoteString(child.Name)
+            .. " enabled=" .. tostring(child.Enabled) .. " path=" .. instancePath(child))
+    end
+end)
+bind(LocalPlayer.DescendantRemoving, function(child)
+    releaseOwned(state.trackedValues, child)
+end)
+
+bind(LocalPlayer:GetPropertyChangedSignal("Team"), function()
+    addEntry("PLAYER", "TEAM_CHANGED " ..
+        (LocalPlayer.Team and quoteString(LocalPlayer.Team.Name) or "none"))
+end)
+bind(LocalPlayer:GetPropertyChangedSignal("Neutral"), function()
+    addEntry("PLAYER", "NEUTRAL_CHANGED " .. tostring(LocalPlayer.Neutral))
+end)
+bind(Players.PlayerAdded, function(player)
+    addEntry("PLAYER", "PLAYER_JOIN name=" .. quoteString(player.Name))
+end)
+bind(Players.PlayerRemoving, function(player)
+    addEntry("PLAYER", "PLAYER_LEAVE name=" .. quoteString(player.Name))
+end)
+
+bind(UserInputService.InputEnded, function(input, processed)
+    if UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        addEntry("INPUT", "KEY_UP " .. input.KeyCode.Name
+            .. " processed=" .. tostring(processed), input.KeyCode.Name .. ":up", 0.01)
+    elseif input.UserInputType.Name:find("Gamepad", 1, true) then
+        addEntry("INPUT", "GAMEPAD_UP " .. input.KeyCode.Name,
+            input.KeyCode.Name .. ":up", 0.02)
+    elseif input.UserInputType == Enum.UserInputType.Touch then
+        addEntry("INPUT", "TOUCH_END", "touch-end", 0.1)
+    elseif input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.MouseButton2 then
+        addEntry("INPUT", input.UserInputType == Enum.UserInputType.MouseButton1
+            and "MOUSE_LEFT_UP" or "MOUSE_RIGHT_UP", "mouse-release", 0.02)
+    end
+end)
+bind(UserInputService.InputChanged, function(input, processed)
+    if UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType == Enum.UserInputType.MouseWheel then
+        addEntry("INPUT", "MOUSE_WHEEL direction=" ..
+            (input.Position.Z > 0 and "up" or "down"), "scroll", 0.06)
+    elseif input.UserInputType.Name:find("Gamepad", 1, true) and
+        input.Position.Magnitude > 0.7 then
+        addEntry("INPUT", "GAMEPAD_AXIS " .. input.KeyCode.Name
+            .. " value=" .. tostring(input.Position), input.KeyCode.Name .. ":axis", 0.4)
+    end
+end)
+
+local positionSample, sampleTime = nil, os.clock()
+bind(RunService.Heartbeat, function()
+    local now = os.clock()
+    if now - sampleTime < 0.75 then return end
+    local elapsed = now - sampleTime
+    sampleTime = now
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then positionSample = nil return end
+    local position = root.Position
+    if positionSample then
+        local traveled = (position - positionSample).Magnitude
+        if traveled > math.max(55, elapsed * 95) then
+            addEntry("CHARACTER", string.format(
+                "RAPID_POSITION_CHANGE distance=%.1f from=(%s) to=(%s)",
+                traveled, tostring(positionSample), tostring(position)),
+                "rapid-position", 0.2)
+        end
+    end
+    positionSample = position
+end)
+
+state.CopyAll = function() return report() end
+state.SaveTxt = saveReportTxt
+state.GetStats = function() return state.stats end
+state.CloseWindow = function() setClosed(true) end
+state.OpenWindow = restoreWindow
+
+
+state.Destroy = function()
+    if not state.alive then return end
+    state.alive = false
+    for _, connection in ipairs(state.connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    for watched in pairs(state.trackedGui) do unwatchGui(watched) end
+    for object in pairs(state.trackedRemotes) do releaseOwned(state.trackedRemotes, object, "remoteCount") end
+    for object in pairs(state.trackedInteract) do releaseOwned(state.trackedInteract, object, "interactCount") end
+    for object in pairs(state.trackedAudio) do releaseOwned(state.trackedAudio, object, "audioCount") end
+    for object in pairs(state.trackedValues) do releaseOwned(state.trackedValues, object) end
+    pcall(function() gui:Destroy() end)
+    if ENV.MorantActionRecorder == state then ENV.MorantActionRecorder = nil end
+end
+
+task.spawn(function()
+    local ok, product = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId)
+    end)
+    if not state.alive then return end
+    if ok and type(product) == "table" and type(product.Name) == "string" then
+        state.gameName = product.Name
+        subtitle.Text = quoteString(product.Name) .. "  |  F8 / floating LOG to reopen"
+        addEntry("SYSTEM", "EXPERIENCE_IDENTIFIED name=" .. quoteString(product.Name))
+    end
+end)
+
+addEntry("SYSTEM", "UNIVERSAL_GAME_LOGGER_STARTED: _ minimize; X close; floating LOG reopen; F8 toggle; COPY ALL and SAVE TXT export")
+addEntry("SYSTEM", state.remoteSupported and
+    "Remote hook active (outgoing namecalls only)" or
+    "Remote hook unsupported: GUI/interaction logging still available")
+addEntry("SYSTEM", "Remote argument values default OFF; enable ARGS when needed")
+updateToggles()
+refreshDisplay()
