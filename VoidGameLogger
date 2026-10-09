@@ -1,0 +1,1861 @@
+-- VOID × MONTRAX | Universal Game Dumper v4.2 (compact, full labels)
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Chat = game:GetService("Chat")
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local ENV = _G
+if type(getgenv) == "function" then
+    local ok, r = pcall(getgenv)
+    if ok and type(r) == "table" then ENV = r end
+end
+if type(ENV.MorantActionRecorder) == "table" and type(ENV.MorantActionRecorder.Destroy) == "function" then
+    pcall(ENV.MorantActionRecorder.Destroy)
+end
+
+local HUB_NAME = "VOID × MONTRAX"
+local HUB_TAG = "VOIDMONTRAX"
+local WIN_W, WIN_H = 560, 440
+local MAX_LINES = 6000
+local MAX_ON_SCREEN = 200
+local MAX_GUI_WATCHES = 3000
+local MAX_REMOTE_WATCHES = 1200
+local MAX_INTERACT_WATCHES = 900
+local MAX_AUDIO_WATCHES = 450
+local MAX_MODEL_SCAN = 120000
+local MAX_DESC_SCAN = 200000
+
+local CATEGORIES = {"ALL","GUI","REMOTE","INTERACT","INPUT","TOOL","CHARACTER","PLAYER","WORLD","AUDIO","SYSTEM","SCRIPTS","ASSETS"}
+
+local COLORS = {
+    bg = Color3.fromRGB(8, 9, 15),
+    glass = Color3.fromRGB(18, 20, 32),
+    glass2 = Color3.fromRGB(26, 29, 44),
+    surface = Color3.fromRGB(22, 25, 38),
+    elevated = Color3.fromRGB(38, 42, 60),
+    line = Color3.fromRGB(62, 68, 92),
+    fg = Color3.fromRGB(235, 240, 255),
+    muted = Color3.fromRGB(150, 160, 190),
+    accent = Color3.fromRGB(140, 100, 255),
+    accent2 = Color3.fromRGB(60, 220, 240),
+    green = Color3.fromRGB(112, 220, 155),
+    red = Color3.fromRGB(245, 130, 145),
+    orange = Color3.fromRGB(255, 175, 85),
+    pink = Color3.fromRGB(250, 120, 190),
+    cyan = Color3.fromRGB(90, 210, 235),
+    yellow = Color3.fromRGB(250, 220, 100),
+    purple = Color3.fromRGB(180, 130, 255),
+}
+
+local state = {
+    alive = true, paused = false, minimized = false, closed = false,
+    dockSide = "right", filter = "ALL", hotkey = Enum.KeyCode.F8,
+    capture = {GUI=true, INPUT=true, INTERACT=true, REMOTE=true, ARGS=true,
+               TOOL=true, CHARACTER=true, PLAYER=true, WORLD=true, AUDIO=true,
+               SCRIPTS=true, ASSETS=true},
+    entries = {}, head = 1, count = 0, lifetime = 0, overwritten = 0, suppressed = 0,
+    stats = {}, eventTypes = {}, dirty = true, connections = {},
+    trackedGui = {}, guiWatched = 0,
+    trackedRemotes = {}, remoteCount = 0,
+    trackedInteract = {}, interactCount = 0,
+    trackedAudio = {}, audioCount = 0,
+    recent = {}, lastInteraction = "none",
+    gameName = game.Name, saveSequence = 0, notificationsEnabled = true, liveSearch = true,
+}
+for _, c in ipairs(CATEGORIES) do state.stats[c] = 0 end
+
+local function bind(signal, cb, ownership)
+    local ok, conn = pcall(function() return signal:Connect(cb) end)
+    if not ok then return nil end
+    if ownership then
+        local list = state.trackedGui[ownership]
+        if list then table.insert(list, conn) end
+    else
+        table.insert(state.connections, conn)
+    end
+    return conn
+end
+
+local function instancePath(o)
+    if typeof(o) ~= "Instance" then return tostring(o) end
+    local p, c = {}, o
+    for _ = 1, 14 do
+        if not c or c == game then break end
+        local ok, n, par = pcall(function() return c.Name, c.Parent end)
+        if not ok then break end
+        table.insert(p, 1, n)
+        c = par
+    end
+    local s = table.concat(p, ".")
+    if #s > 240 then s = "..." .. s:sub(-237) end
+    return s
+end
+
+local function quoteString(v)
+    if type(v) ~= "string" then v = tostring(v) end
+    local lo = v:lower()
+    if #v > 300 or lo:find("bearer ", 1, true) or lo:find("authorization", 1, true)
+        or lo:find("password=", 1, true) then
+        return "<redacted " .. #v .. "c>"
+    end
+    return string.format("%q", v:gsub("[\r\n\t]", " "))
+end
+
+local function summarizeValue(v, d, seen)
+    d = d or 0; seen = seen or {}
+    local k = typeof(v)
+    if k == "string" then return quoteString(v) end
+    if k == "nil" then return "nil" end
+    if k == "number" then
+        if v == math.floor(v) and math.abs(v) < 1e15 then return tostring(math.floor(v)) end
+        return string.format("%.4g", v)
+    end
+    if k == "boolean" then return tostring(v) end
+    if k == "Instance" then return "Inst(" .. instancePath(v) .. ")" end
+    if k == "Vector3" then return string.format("V3(%.1f,%.1f,%.1f)", v.X, v.Y, v.Z) end
+    if k == "Vector2" then return string.format("V2(%.1f,%.1f)", v.X, v.Y) end
+    if k == "CFrame" then local p = v.Position; return string.format("CF(%.1f,%.1f,%.1f)", p.X, p.Y, p.Z) end
+    if k == "Color3" then return string.format("RGB(%d,%d,%d)", v.R*255, v.G*255, v.B*255) end
+    if k == "UDim2" then return string.format("UD2(%d,%d,%d,%d)", v.X.Scale, v.X.Offset, v.Y.Scale, v.Y.Offset) end
+    if k == "EnumItem" then return "Enum." .. tostring(v) end
+    if k == "BrickColor" then return "BC(" .. tostring(v.Number) .. ")" end
+    if k == "NumberRange" then return string.format("NR(%.1f..%.1f)", v.Min, v.Max) end
+    if k == "Rect" then return string.format("Rect(%d,%d,%d,%d)", v.Min.X, v.Min.Y, v.Max.X, v.Max.Y) end
+    if k == "table" then
+        if d >= 3 or seen[v] then return "{...}" end
+        seen[v] = true
+        local out, total = {}, 0
+        for kk, vv in pairs(v) do
+            total = total + 1
+            if total > 8 then break end
+            local lk = tostring(kk):lower()
+            local r
+            if lk:find("password",1,true) or lk:find("secret",1,true)
+                or lk:find("token",1,true) or lk:find("cookie",1,true) then r = "<redacted>"
+            else r = summarizeValue(vv, d+1, seen) end
+            local kp
+            if type(kk) == "string" and kk:match("^[%a_][%w_]*$") then kp = kk
+            else kp = "[" .. summarizeValue(kk, d+1, seen) .. "]" end
+            table.insert(out, kp .. "=" .. r)
+        end
+        seen[v] = nil
+        return "{" .. table.concat(out, ",") .. (total > 8 and ",..." or "") .. "}"
+    end
+    return "<" .. tostring(k) .. ">"
+end
+
+local function addEntry(cat, msg, rateKey, interval, eventType)
+    if not state.alive then return end
+    if state.paused and cat ~= "SYSTEM" then return end
+    if state.capture[cat] == false then return end
+    if rateKey then
+        local key = cat .. ":" .. rateKey
+        local now = os.clock()
+        if state.recent[key] and now - state.recent[key] < (interval or 0.08) then
+            state.suppressed = state.suppressed + 1
+            return
+        end
+        state.recent[key] = now
+        if state.lifetime % 250 == 0 then
+            for k, l in pairs(state.recent) do if now - l > 10 then state.recent[k] = nil end end
+        end
+    end
+    state.lifetime = state.lifetime + 1
+    state.stats[cat] = (state.stats[cat] or 0) + 1
+    local kind = eventType or tostring(msg):match("^([%w_%.]+)") or cat
+    state.eventTypes[kind] = (state.eventTypes[kind] or 0) + 1
+    local e = {cat = cat, text = string.format("[#%05d %s] [%s] %s",
+        state.lifetime, os.date("%H:%M:%S"), cat, tostring(msg))}
+    if state.count < MAX_LINES then
+        local pos = (state.head + state.count - 1) % MAX_LINES + 1
+        state.entries[pos] = e
+        state.count = state.count + 1
+    else
+        state.entries[state.head] = e
+        state.head = state.head % MAX_LINES + 1
+        state.overwritten = state.overwritten + 1
+    end
+    state.dirty = true
+end
+
+local function getEntries(filter, maxVisible)
+    local lines = {}
+    for i = state.count - 1, 0, -1 do
+        local idx = (state.head + i - 1) % MAX_LINES + 1
+        local it = state.entries[idx]
+        if it and (filter == "ALL" or it.cat == filter) then
+            lines[#lines + 1] = it.text
+            if maxVisible and #lines >= maxVisible then break end
+        end
+    end
+    for l = 1, math.floor(#lines/2) do
+        local r = #lines - l + 1
+        lines[l], lines[r] = lines[r], lines[l]
+    end
+    return lines
+end
+
+local function report()
+    local types = {}
+    for n, c in pairs(state.eventTypes) do types[#types+1] = {name=n, count=c} end
+    table.sort(types, function(a,b) if a.count==b.count then return a.name<b.name end return a.count>b.count end)
+    local freq = {}
+    for i=1,math.min(#types,20) do freq[#freq+1] = types[i].name .. "=" .. types[i].count end
+    local totals = {}
+    for _, c in ipairs(CATEGORIES) do
+        if c ~= "ALL" then totals[#totals+1] = c .. "=" .. (state.stats[c] or 0) end
+    end
+    return table.concat({
+        HUB_NAME .. " DUMPER v4.2",
+        "Game: " .. tostring(state.gameName) .. "  PlaceId: " .. tostring(game.PlaceId),
+        "UniverseId: " .. tostring(game.GameId) .. "  JobId: " .. tostring(game.JobId),
+        "Exported: " .. os.date("%Y-%m-%d %H:%M:%S"),
+        "Events: " .. state.lifetime .. "  Stored: " .. state.count .. "  Dropped: " .. state.overwritten,
+        "Category: " .. table.concat(totals, " | "),
+        "Top types: " .. (#freq > 0 and table.concat(freq, " | ") or "none"),
+        "Watched: GUI " .. state.guiWatched .. "  REM " .. state.remoteCount ..
+            "  INT " .. state.interactCount .. "  AUD " .. state.audioCount,
+        "ARG values: " .. (state.capture.ARGS and "ON" or "OFF"),
+        "Last: " .. state.lastInteraction,
+        "--- LOG START ---",
+        table.concat(getEntries("ALL"), "\n"),
+        "--- LOG END ---",
+    }, "\n")
+end
+
+local function ins(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props or {}) do o[k] = v end
+    o.Parent = parent
+    return o
+end
+local function round(t, r) ins("UICorner", {CornerRadius = UDim.new(0, r)}, t); return t end
+local function stroke(t, color, thickness) ins("UIStroke", {Color = color or COLORS.line, Thickness = thickness or 1}, t); return t end
+
+local function label(parent, text, size, color)
+    return ins("TextLabel", {
+        BackgroundTransparency = 1, Text = text, TextColor3 = color or COLORS.fg,
+        TextSize = size or 11, Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+end
+
+local function btn(parent, text, pos, size, bg)
+    local b = ins("TextButton", {
+        Text = text, Position = pos, Size = size,
+        BackgroundColor3 = bg or COLORS.elevated,
+        TextColor3 = COLORS.fg, Font = Enum.Font.GothamMedium,
+        TextSize = 10, AutoButtonColor = true, BorderSizePixel = 0,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+    round(b, 5)
+    return b
+end
+
+local gui = ins("ScreenGui", {
+    Name = HUB_TAG .. "_Dumper", ResetOnSpawn = false,
+    IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    DisplayOrder = 2147483000,
+})
+local parented = false
+if type(gethui) == "function" then
+    local ok, r = pcall(gethui)
+    if ok and r then parented = pcall(function() gui.Parent = r end) end
+end
+if not parented then parented = pcall(function() gui.Parent = CoreGui end) end
+if not parented then gui.Parent = PlayerGui end
+if type(protectgui) == "function" then pcall(protectgui, gui) end
+
+local notifContainer = ins("Frame", {
+    Size = UDim2.new(0, 260, 0, 300), Position = UDim2.new(1, -280, 0, 14),
+    BackgroundTransparency = 1, ZIndex = 500,
+}, gui)
+ins("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+    VerticalAlignment = Enum.VerticalAlignment.Top, Parent = notifContainer})
+
+local function notify(text, color)
+    if not state.notificationsEnabled or not state.alive then return end
+    local n = round(ins("Frame", {
+        Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = COLORS.glass,
+        BorderSizePixel = 0, ZIndex = 501,
+    }, notifContainer), 8)
+    stroke(n, color or COLORS.accent)
+    local bar = ins("Frame", {
+        Size = UDim2.new(0, 2, 1, -10), Position = UDim2.new(0, 5, 0, 5),
+        BackgroundColor3 = color or COLORS.accent, BorderSizePixel = 0, ZIndex = 502, Parent = n,
+    })
+    round(bar, 1)
+    local l = label(n, text, 11)
+    l.Position = UDim2.fromOffset(15, 0)
+    l.Size = UDim2.new(1, -22, 1, 0)
+    l.ZIndex = 502
+    task.delay(3, function()
+        if n and n.Parent then
+            TweenService:Create(n, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+            task.delay(0.3, function() if n and n.Parent then n:Destroy() end end)
+        end
+    end)
+end
+
+local function copyToClipboard(content)
+    for _, fn in ipairs({"setclipboard", "toclipboard"}) do
+        local f = ENV[fn] or _G[fn]
+        if type(f) == "function" then
+            local ok = pcall(f, content)
+            if ok then return true end
+        end
+    end
+    return false
+end
+
+-- ============================================================
+-- MAIN WINDOW
+-- ============================================================
+local main = round(ins("Frame", {
+    Name = "Main", AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(WIN_W, WIN_H),
+    BackgroundColor3 = COLORS.bg, BorderSizePixel = 0, Active = true,
+}, gui), 10)
+stroke(main, COLORS.line)
+local uiScale = ins("UIScale", {Scale = 1}, main)
+
+local topbar = ins("Frame", {
+    Name = "Header", Size = UDim2.new(1, 0, 0, 40),
+    BackgroundColor3 = COLORS.glass, BackgroundTransparency = 0.15,
+    BorderSizePixel = 0, Active = true, ZIndex = 2,
+}, main)
+round(topbar, 10)
+local gradTop = ins("Frame", {
+    Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = COLORS.accent,
+    BorderSizePixel = 0, ZIndex = 3, Parent = topbar,
+})
+ins("UIGradient", {Color = ColorSequence.new(COLORS.accent, COLORS.accent2)}, gradTop)
+
+local logoDot = ins("Frame", {
+    Size = UDim2.fromOffset(24, 24), Position = UDim2.fromOffset(10, 8),
+    BackgroundColor3 = COLORS.accent, BorderSizePixel = 0, ZIndex = 3,
+}, topbar)
+round(logoDot, 7)
+ins("UIGradient", {Color = ColorSequence.new(COLORS.accent, COLORS.accent2), Rotation = 45}, logoDot)
+local ll = label(logoDot, "◈", 13, COLORS.bg)
+ll.Font = Enum.Font.GothamBold
+ll.TextXAlignment = Enum.TextXAlignment.Center
+ll.Size = UDim2.fromScale(1, 1)
+ll.ZIndex = 4
+
+local title = label(topbar, HUB_NAME, 12)
+title.Font = Enum.Font.GothamBold
+title.Position = UDim2.fromOffset(40, 5)
+title.Size = UDim2.new(1, -140, 0, 14)
+title.ZIndex = 3
+local subtitle = label(topbar, "Universal Dumper  ·  F8 toggle", 9, COLORS.muted)
+subtitle.Position = UDim2.fromOffset(40, 22)
+subtitle.Size = UDim2.new(1, -140, 0, 12)
+subtitle.ZIndex = 3
+
+local minBtn = btn(topbar, "—", UDim2.new(1, -96, 0, 9), UDim2.fromOffset(26, 22), COLORS.elevated)
+minBtn.ZIndex = 3
+local dockBtn = btn(topbar, "⇌", UDim2.new(1, -68, 0, 9), UDim2.fromOffset(26, 22), COLORS.elevated)
+dockBtn.ZIndex = 3
+local closeBtn = btn(topbar, "✕", UDim2.new(1, -40, 0, 9), UDim2.fromOffset(26, 22), COLORS.red)
+closeBtn.ZIndex = 3
+
+local compactPill = round(ins("TextButton", {
+    Name = "CompactPill", Size = UDim2.fromOffset(140, 36),
+    Position = UDim2.new(1, -155, 0.5, -18),
+    BackgroundColor3 = COLORS.accent, Text = "",
+    AutoButtonColor = false, Visible = false, Active = true,
+    BorderSizePixel = 0, ZIndex = 200,
+}, gui), 18)
+ins("UIStroke", {Color = COLORS.accent2, Thickness = 1}, compactPill)
+ins("UIGradient", {Color = ColorSequence.new(COLORS.accent, COLORS.accent2), Rotation = 45}, compactPill)
+local pi = label(compactPill, "◈", 15, COLORS.bg)
+pi.Font = Enum.Font.GothamBold
+pi.Position = UDim2.fromOffset(9, 0)
+pi.Size = UDim2.fromOffset(22, 36)
+local pt = label(compactPill, HUB_NAME, 11, COLORS.bg)
+pt.Font = Enum.Font.GothamBold
+pt.Position = UDim2.fromOffset(34, 4)
+pt.Size = UDim2.new(1, -42, 0, 14)
+local ps = label(compactPill, "click to expand", 9, COLORS.bg)
+ps.TextTransparency = 0.3
+ps.Position = UDim2.fromOffset(34, 18)
+ps.Size = UDim2.new(1, -42, 0, 12)
+
+-- STATS
+local statsPanel = round(ins("Frame", {
+    Position = UDim2.fromOffset(10, 48), Size = UDim2.new(1, -20, 0, 42),
+    BackgroundColor3 = COLORS.glass, BackgroundTransparency = 0.05,
+    BorderSizePixel = 0, ZIndex = 2,
+}, main), 7)
+stroke(statsPanel, COLORS.line)
+local statsTop = label(statsPanel, "Waiting...", 11)
+statsTop.Font = Enum.Font.GothamBold
+statsTop.Position = UDim2.fromOffset(9, 4)
+statsTop.Size = UDim2.new(1, -18, 0, 14)
+local statsBot = label(statsPanel, "", 9, COLORS.muted)
+statsBot.Position = UDim2.fromOffset(9, 20)
+statsBot.Size = UDim2.new(1, -18, 0, 12)
+local statsBot2 = label(statsPanel, "", 9, COLORS.cyan)
+statsBot2.Position = UDim2.fromOffset(9, 30)
+statsBot2.Size = UDim2.new(1, -18, 0, 10)
+
+-- TOOLBAR ROW 1 (full labels)
+local tools1 = ins("Frame", {
+    Position = UDim2.fromOffset(10, 96), Size = UDim2.new(1, -20, 0, 24),
+    BackgroundTransparency = 1, ZIndex = 2,
+}, main)
+local copyButton = btn(tools1, "COPY LOG", UDim2.fromOffset(0, 0), UDim2.fromOffset(62, 24), COLORS.accent)
+copyButton.TextColor3 = COLORS.bg
+copyButton.Font = Enum.Font.GothamBold
+copyButton.TextSize = 9
+local saveButton = btn(tools1, "SAVE", UDim2.fromOffset(66, 0), UDim2.fromOffset(44, 24), COLORS.green)
+saveButton.TextColor3 = COLORS.bg
+saveButton.Font = Enum.Font.GothamBold
+saveButton.TextSize = 9
+local clearButton = btn(tools1, "CLEAR", UDim2.fromOffset(114, 0), UDim2.fromOffset(44, 24))
+clearButton.TextSize = 9
+local pauseButton = btn(tools1, "PAUSE", UDim2.fromOffset(162, 0), UDim2.fromOffset(48, 24))
+pauseButton.TextSize = 9
+local filterButton = btn(tools1, "ALL", UDim2.fromOffset(214, 0), UDim2.fromOffset(48, 24), COLORS.elevated)
+filterButton.TextColor3 = COLORS.accent
+filterButton.Font = Enum.Font.GothamBold
+filterButton.TextSize = 9
+local searchBox = ins("TextBox", {
+    Position = UDim2.fromOffset(266, 0), Size = UDim2.new(1, -266, 0, 24),
+    PlaceholderText = "filter log...", Text = "", ClearTextOnFocus = false,
+    BackgroundColor3 = COLORS.glass2, TextColor3 = COLORS.fg,
+    PlaceholderColor3 = COLORS.muted, Font = Enum.Font.Gotham,
+    TextSize = 9, TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 2, BorderSizePixel = 0,
+}, tools1)
+round(searchBox, 5)
+stroke(searchBox, COLORS.line)
+
+-- TOOLBAR ROW 2 (full dump labels, 2 sub-rows)
+local tools2 = ins("Frame", {
+    Position = UDim2.fromOffset(10, 122), Size = UDim2.new(1, -20, 0, 24),
+    BackgroundTransparency = 1, ZIndex = 2,
+}, main)
+local playAllBtn = btn(tools2, "PLAY ALL", UDim2.fromOffset(0, 0), UDim2.fromOffset(58, 24), COLORS.red)
+playAllBtn.TextColor3 = COLORS.bg
+playAllBtn.Font = Enum.Font.GothamBold
+playAllBtn.TextSize = 9
+local dumpAllBtn = btn(tools2, "DUMP ALL", UDim2.fromOffset(62, 0), UDim2.fromOffset(62, 24), COLORS.accent)
+dumpAllBtn.TextColor3 = COLORS.bg
+dumpAllBtn.Font = Enum.Font.GothamBold
+dumpAllBtn.TextSize = 9
+local remotesBtn = btn(tools2, "REMOTES", UDim2.fromOffset(128, 0), UDim2.fromOffset(58, 24), COLORS.purple)
+remotesBtn.TextColor3 = COLORS.bg
+remotesBtn.TextSize = 9
+local decalsBtn = btn(tools2, "DECALS", UDim2.fromOffset(190, 0), UDim2.fromOffset(54, 24), COLORS.pink)
+decalsBtn.TextColor3 = COLORS.bg
+decalsBtn.TextSize = 9
+local modelsBtn = btn(tools2, "MODELS", UDim2.fromOffset(248, 0), UDim2.fromOffset(54, 24), COLORS.cyan)
+modelsBtn.TextColor3 = COLORS.bg
+modelsBtn.TextSize = 9
+local assetsBtn = btn(tools2, "ASSETS", UDim2.fromOffset(306, 0), UDim2.fromOffset(54, 24), COLORS.green)
+assetsBtn.TextColor3 = COLORS.bg
+assetsBtn.TextSize = 9
+local scriptsBtn = btn(tools2, "SCRIPTS", UDim2.fromOffset(364, 0), UDim2.fromOffset(58, 24), COLORS.yellow)
+scriptsBtn.TextColor3 = COLORS.bg
+scriptsBtn.TextSize = 9
+local propsBtn = btn(tools2, "PROPS", UDim2.fromOffset(426, 0), UDim2.new(1, -426, 0, 24), COLORS.orange)
+propsBtn.TextColor3 = COLORS.bg
+propsBtn.TextSize = 9
+
+local tools2b = ins("Frame", {
+    Position = UDim2.fromOffset(10, 148), Size = UDim2.new(1, -20, 0, 24),
+    BackgroundTransparency = 1, ZIndex = 2,
+}, main)
+local valuesBtn = btn(tools2b, "VALUES", UDim2.fromOffset(0, 0), UDim2.fromOffset(58, 24), COLORS.cyan)
+valuesBtn.TextColor3 = COLORS.bg
+valuesBtn.TextSize = 9
+local soundsBtn = btn(tools2b, "SOUNDS", UDim2.fromOffset(62, 0), UDim2.fromOffset(58, 24), COLORS.accent2)
+soundsBtn.TextColor3 = COLORS.bg
+soundsBtn.TextSize = 9
+local animsBtn = btn(tools2b, "ANIMS", UDim2.fromOffset(124, 0), UDim2.fromOffset(54, 24), COLORS.orange)
+animsBtn.TextColor3 = COLORS.bg
+animsBtn.TextSize = 9
+local partsBtn = btn(tools2b, "PARTS", UDim2.fromOffset(182, 0), UDim2.fromOffset(54, 24), COLORS.red)
+partsBtn.TextColor3 = COLORS.bg
+partsBtn.TextSize = 9
+local lightsBtn = btn(tools2b, "LIGHTS", UDim2.fromOffset(240, 0), UDim2.new(1, -240, 0, 24), COLORS.yellow)
+lightsBtn.TextColor3 = COLORS.bg
+lightsBtn.TextSize = 9
+
+-- TOGGLES (single row, full labels)
+local toggles = ins("Frame", {
+    Position = UDim2.fromOffset(10, 176), Size = UDim2.new(1, -20, 0, 20),
+    BackgroundTransparency = 1, ZIndex = 2,
+}, main)
+local toggleDefs = {
+    {"GUI","GUI"},{"INPUT","INPUT"},{"INTERACT","INT"},{"TOOL","TOOL"},
+    {"CHARACTER","CHAR"},{"REMOTE","REMOTE"},{"ARGS","ARGS"},{"PLAYER","PLYR"},
+    {"WORLD","WORLD"},{"AUDIO","AUDIO"},{"SCRIPTS","SCRP"},{"ASSETS","ASST"},
+}
+local toggleButtons = {}
+for i, pair in ipairs(toggleDefs) do
+    local key, cap = pair[1], pair[2]
+    local col = (i - 1) % 12
+    local b = btn(toggles, cap, UDim2.new(col / 12, 1, 0, 0), UDim2.new(1 / 12, -3, 0, 20))
+    b.TextSize = 8
+    b.Font = Enum.Font.GothamBold
+    toggleButtons[key] = b
+end
+
+-- LOG VIEWPORT
+local viewport = round(ins("ScrollingFrame", {
+    Position = UDim2.fromOffset(10, 200),
+    Size = UDim2.new(1, -20, 1, -210),
+    BackgroundColor3 = COLORS.glass, BackgroundTransparency = 0.05,
+    BorderSizePixel = 0, ScrollBarThickness = 5,
+    ScrollBarImageColor3 = COLORS.accent,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
+    ZIndex = 2,
+}, main), 7)
+stroke(viewport, COLORS.line)
+local logText = ins("TextLabel", {
+    Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -22, 0, 20),
+    AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
+    Text = "Ready. Interact with the game.",
+    TextColor3 = COLORS.fg, Font = Enum.Font.Code, TextSize = 11,
+    TextWrapped = false, TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 3,
+}, viewport)
+
+-- DUMP PANEL
+local dumpPanel = round(ins("Frame", {
+    Name = "DumpPanel", Visible = false,
+    Position = UDim2.new(0, 10, 0, 48),
+    Size = UDim2.new(1, -20, 1, -58),
+    BackgroundColor3 = COLORS.glass, BorderSizePixel = 0, ZIndex = 50,
+}, main), 9)
+stroke(dumpPanel, COLORS.accent)
+
+local dumpHeader = label(dumpPanel, "DUMP", 12)
+dumpHeader.Font = Enum.Font.GothamBold
+dumpHeader.Position = UDim2.fromOffset(10, 8)
+dumpHeader.Size = UDim2.new(1, -200, 0, 16)
+dumpHeader.ZIndex = 51
+dumpHeader.TextColor3 = COLORS.accent
+
+local tabBar = ins("ScrollingFrame", {
+    Position = UDim2.fromOffset(10, 28),
+    Size = UDim2.new(1, -180, 0, 22),
+    BackgroundTransparency = 1, ZIndex = 51,
+    ScrollBarThickness = 0, ScrollingDirection = Enum.ScrollingDirection.X,
+    CanvasSize = UDim2.new(),
+}, dumpPanel)
+local tabLayout = ins("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = UDim.new(0, 4), Parent = tabBar,
+})
+tabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    tabBar.CanvasSize = UDim2.fromOffset(tabLayout.AbsoluteContentSize.X, 0)
+end)
+
+local function makeTab(name)
+    local t = btn(tabBar, name, UDim2.fromOffset(0, 0), UDim2.fromOffset(62, 20), COLORS.elevated)
+    t.TextSize = 9
+    t.Font = Enum.Font.GothamBold
+    t.ZIndex = 52
+    return t
+end
+
+local remotesTab = makeTab("REMOTES")
+local decalsTab = makeTab("DECALS")
+local modelsTab = makeTab("MODELS")
+local assetsTab = makeTab("ASSETS")
+local scriptsTab = makeTab("SCRIPTS")
+local propsTab = makeTab("PROPS")
+local valuesTab = makeTab("VALUES")
+local soundsTab = makeTab("SOUNDS")
+local animsTab = makeTab("ANIMS")
+local partsTab = makeTab("PARTS")
+local lightTab = makeTab("LIGHTS")
+
+local backBtn = btn(dumpPanel, "BACK", UDim2.new(1, -60, 0, 6), UDim2.fromOffset(50, 22))
+backBtn.ZIndex = 51
+local rescanBtn = btn(dumpPanel, "RESCAN", UDim2.new(1, -114, 0, 6), UDim2.fromOffset(50, 22))
+rescanBtn.TextSize = 9
+rescanBtn.ZIndex = 51
+local exportBtn = btn(dumpPanel, "EXPORT", UDim2.new(1, -168, 0, 6), UDim2.fromOffset(50, 22), COLORS.accent)
+exportBtn.TextColor3 = COLORS.bg
+exportBtn.Font = Enum.Font.GothamBold
+exportBtn.TextSize = 9
+exportBtn.ZIndex = 51
+
+local dumpSearch = ins("TextBox", {
+    Position = UDim2.fromOffset(10, 54), Size = UDim2.new(1, -20, 0, 22),
+    PlaceholderText = "search this dump...", Text = "", ClearTextOnFocus = false,
+    BackgroundColor3 = COLORS.bg, TextColor3 = COLORS.fg,
+    PlaceholderColor3 = COLORS.muted, Font = Enum.Font.Gotham,
+    TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 51, BorderSizePixel = 0,
+}, dumpPanel)
+round(dumpSearch, 5)
+stroke(dumpSearch, COLORS.line)
+
+local actionRow = ins("Frame", {
+    Position = UDim2.fromOffset(10, 80), Size = UDim2.new(1, -20, 0, 22),
+    BackgroundTransparency = 1, ZIndex = 51,
+}, dumpPanel)
+local playAllNoArgs = btn(actionRow, "PLAY (no args)", UDim2.fromOffset(0, 0), UDim2.fromOffset(96, 22), COLORS.red)
+playAllNoArgs.TextColor3 = COLORS.bg
+playAllNoArgs.Font = Enum.Font.GothamBold
+playAllNoArgs.TextSize = 9
+playAllNoArgs.ZIndex = 52
+local playAllWithArgs = btn(actionRow, "PLAY (last args)", UDim2.fromOffset(100, 0), UDim2.fromOffset(104, 22), COLORS.green)
+playAllWithArgs.TextColor3 = COLORS.bg
+playAllWithArgs.Font = Enum.Font.GothamBold
+playAllWithArgs.TextSize = 9
+playAllWithArgs.ZIndex = 52
+local dumpStatus = label(actionRow, "Ready.", 9, COLORS.muted)
+dumpStatus.Position = UDim2.fromOffset(210, 0)
+dumpStatus.Size = UDim2.new(1, -210, 1, 0)
+dumpStatus.ZIndex = 52
+
+local dumpList = round(ins("ScrollingFrame", {
+    Position = UDim2.fromOffset(10, 106),
+    Size = UDim2.new(1, -20, 1, -116),
+    BackgroundColor3 = COLORS.bg, BorderSizePixel = 0,
+    ScrollBarThickness = 5, ScrollBarImageColor3 = COLORS.accent,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(),
+    ZIndex = 51,
+}, dumpPanel), 6)
+stroke(dumpList, COLORS.line)
+
+local function clearList()
+    for _, c in ipairs(dumpList:GetChildren()) do
+        if c:IsA("GuiObject") then c:Destroy() end
+    end
+end
+
+-- ============================================================
+-- SCANNERS
+-- ============================================================
+local caches = {
+    REMOTES={}, DECALS={}, MODELS={}, ASSETS={}, SCRIPTS={}, PROPS={},
+    VALUES={}, SOUNDS={}, ANIMS={}, PARTS={}, LIGHTS={},
+}
+local dumpTab = "REMOTES"
+local dumpSearchText = ""
+
+local function match(name, path)
+    if dumpSearchText == "" then return true end
+    local q = dumpSearchText:lower()
+    return name:lower():find(q, 1, true) ~= nil or (path and path:lower():find(q, 1, true) ~= nil)
+end
+
+local function walkRoots(roots, limit, fn)
+    local v = 0
+    for _, root in ipairs(roots) do
+        if v >= (limit or math.huge) then break end
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if ok and list then
+            for _, obj in ipairs(list) do
+                v = v + 1
+                if v >= (limit or math.huge) then break end
+                pcall(fn, obj, v)
+                if v % 500 == 0 then task.wait() end
+            end
+        end
+    end
+    return v
+end
+
+local function scanRemotes()
+    local list, seen = {}, {}
+    walkRoots({ReplicatedStorage, Workspace, PlayerGui, LocalPlayer,
+        game:GetService("ServerScriptService"), game:GetService("StarterGui"),
+        game:GetService("StarterPlayer"), game:GetService("ServerStorage"),
+        Chat, Lighting}, MAX_DESC_SCAN, function(o)
+        if seen[o] then return end
+        if o:IsA("RemoteEvent") or o:IsA("UnreliableRemoteEvent") or o:IsA("RemoteFunction")
+            or o:IsA("BindableEvent") or o:IsA("BindableFunction") then
+            seen[o] = true
+            table.insert(list, {remote=o, name=o.Name, kind=o.ClassName,
+                path=instancePath(o), argCount=0, lastArgs=nil})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.REMOTES = list
+    return #list
+end
+
+local function hookRemoteArgs(remote)
+    if not remote then return end
+    local ok = pcall(function()
+        if remote:GetAttribute("__VMHook") then return end
+        remote:SetAttribute("__VMHook", true)
+    end)
+    if not ok then return end
+    if remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent") then
+        bind(remote.OnClientEvent, function(...)
+            local argc = select("#", ...)
+            local args = {...}
+            for _, e in ipairs(caches.REMOTES) do
+                if e.remote == remote then e.argCount = argc; e.lastArgs = args; break end
+            end
+        end)
+    end
+end
+
+local function argsPreview(args, argc)
+    if not args then return "(none)" end
+    local p = {}
+    local n = argc or #args
+    for i = 1, math.min(n, 5) do p[#p+1] = summarizeValue(args[i], 0, {}) end
+    if n > 5 then p[#p+1] = "..." end
+    return "(" .. table.concat(p, ",") .. ")"
+end
+
+local function scanDecals()
+    local list, seen = {}, {}
+    walkRoots({Workspace, ReplicatedStorage, PlayerGui, LocalPlayer, Lighting}, MAX_DESC_SCAN, function(o)
+        if seen[o] then return end
+        if o:IsA("Decal") or o:IsA("Texture") then
+            seen[o] = true
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, texture=o.Texture, path=instancePath(o)})
+        elseif o:IsA("ImageLabel") or o:IsA("ImageButton") then
+            seen[o] = true
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, texture=o.Image, path=instancePath(o)})
+        elseif o:IsA("SurfaceAppearance") then
+            seen[o] = true
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, texture=o.ColorMap, path=instancePath(o)})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.DECALS = list
+    return #list
+end
+
+local function scanModels()
+    local list, seen = {}, {}
+    walkRoots({Workspace, ReplicatedStorage, PlayerGui, LocalPlayer}, MAX_MODEL_SCAN, function(o)
+        if seen[o] then return end
+        if o:IsA("Model") or o:IsA("Tool") or o:IsA("MeshPart")
+            or o:IsA("SpecialMesh") or o:IsA("Accessory") or o:IsA("UnionOperation") then
+            seen[o] = true
+            local path = instancePath(o)
+            local childCount = #o:GetChildren()
+            local partCount, meshId, textureId = 0, "", ""
+            if o:IsA("Model") or o:IsA("Tool") or o:IsA("Accessory") then
+                for _, p in ipairs(o:GetChildren()) do
+                    if p:IsA("BasePart") then partCount = partCount + 1 end
+                end
+                local mesh = o:FindFirstChildWhichIsA("MeshPart", true)
+                if mesh then
+                    if mesh.MeshId ~= "" then meshId = mesh.MeshId end
+                    if mesh.TextureID ~= "" then textureId = mesh.TextureID end
+                end
+                local h = o:FindFirstChild("Handle")
+                if h and h:IsA("BasePart") then
+                    local sm = h:FindFirstChildOfClass("SpecialMesh")
+                    if sm and sm.MeshId ~= "" then meshId = sm.MeshId end
+                    if h:IsA("MeshPart") then
+                        if h.MeshId ~= "" then meshId = h.MeshId end
+                        if h.TextureID ~= "" then textureId = h.TextureID end
+                    end
+                end
+            elseif o:IsA("MeshPart") then
+                meshId = o.MeshId; textureId = o.TextureID; partCount = 1
+            elseif o:IsA("SpecialMesh") then
+                meshId = o.MeshId; textureId = o.TextureId or ""
+            end
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=path,
+                childCount=childCount, partCount=partCount, meshId=meshId, textureId=textureId})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.MODELS = list
+    return #list
+end
+
+local function scanAssets()
+    local sounds, anims, particles, tools, images, meshes = {}, {}, {}, {}, {}, {}
+    walkRoots({Workspace, ReplicatedStorage, SoundService, PlayerGui, LocalPlayer, Lighting}, MAX_DESC_SCAN, function(o)
+        if o:IsA("Sound") and o.SoundId ~= "" then
+            table.insert(sounds, {name=o.Name, id=o.SoundId, path=instancePath(o)})
+        elseif o:IsA("Animation") and o.AnimationId ~= "" then
+            table.insert(anims, {name=o.Name, id=o.AnimationId, path=instancePath(o)})
+        elseif o:IsA("ParticleEmitter") then
+            table.insert(particles, {name=o.Name, id=o.Texture or "", path=instancePath(o)})
+        elseif o:IsA("Tool") then
+            table.insert(tools, {name=o.Name, path=instancePath(o)})
+        elseif o:IsA("Decal") or o:IsA("Texture") then
+            table.insert(images, {name=o.Name, id=o.Texture, path=instancePath(o)})
+        elseif o:IsA("MeshPart") then
+            table.insert(meshes, {name=o.Name, id=o.MeshId, path=instancePath(o)})
+        end
+    end)
+    caches.ASSETS = {Sounds=sounds, Animations=anims, Particles=particles,
+        Tools=tools, Images=images, Meshes=meshes}
+    return #sounds + #anims + #particles + #tools + #images + #meshes
+end
+
+local function scanScripts()
+    local list = {}
+    walkRoots({ReplicatedStorage, PlayerGui, LocalPlayer, Workspace,
+        game:GetService("StarterGui"), game:GetService("StarterPlayer"),
+        game:GetService("StarterPack"), Lighting, Chat}, MAX_DESC_SCAN, function(o)
+        if o:IsA("Script") or o:IsA("LocalScript") or o:IsA("ModuleScript") then
+            local ok, src = pcall(function() return o.Source end)
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=instancePath(o),
+                source=ok and src or "[unreadable]", sourceLen=ok and #src or 0, disabled=o.Disabled})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.SCRIPTS = list
+    return #list
+end
+
+local function scanProps()
+    local list, seen = {}, {}
+    walkRoots({Workspace, ReplicatedStorage, PlayerGui, LocalPlayer}, 40000, function(o)
+        if seen[o] then return end
+        seen[o] = true
+        if o:IsA("BasePart") then
+            table.insert(list, {object=o, name=o.Name, path=instancePath(o),
+                size=o.Size, position=o.Position, material=o.Material.Name,
+                transparency=o.Transparency, canCollide=o.CanCollide,
+                anchored=o.Anchored, color=o.Color})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.PROPS = list
+    return #list
+end
+
+local function scanValues()
+    local list = {}
+    walkRoots({ReplicatedStorage, PlayerGui, LocalPlayer, Workspace,
+        game:GetService("StarterGui"), game:GetService("StarterPlayer")}, MAX_DESC_SCAN, function(o)
+        if o:IsA("StringValue") or o:IsA("IntValue") or o:IsA("NumberValue")
+            or o:IsA("BoolValue") or o:IsA("ObjectValue") or o:IsA("Vector3Value")
+            or o:IsA("CFrameValue") or o:IsA("Color3Value") or o:IsA("BrickColorValue")
+            or o:IsA("RayValue") then
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=instancePath(o),
+                value=summarizeValue(o.Value, 0, {})})
+        elseif o:IsA("Folder") or o:IsA("Configuration") then
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=instancePath(o), value="(container)"})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.VALUES = list
+    return #list
+end
+
+local function scanSounds()
+    local list = {}
+    walkRoots({Workspace, ReplicatedStorage, SoundService, PlayerGui, LocalPlayer}, MAX_DESC_SCAN, function(o)
+        if o:IsA("Sound") then
+            table.insert(list, {object=o, name=o.Name, path=instancePath(o),
+                soundId=o.SoundId, volume=o.Volume, playing=o.Playing, looped=o.Looped})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.SOUNDS = list
+    return #list
+end
+
+local function scanAnims()
+    local list = {}
+    walkRoots({Workspace, ReplicatedStorage, PlayerGui, LocalPlayer}, MAX_DESC_SCAN, function(o)
+        if o:IsA("Animation") then
+            table.insert(list, {object=o, name=o.Name, path=instancePath(o), animId=o.AnimationId})
+        elseif o:IsA("Animator") then
+            for _, t in ipairs(o:GetPlayingAnimationTracks()) do
+                local a = t.Animation
+                table.insert(list, {object=a, name=a.Name or t.Name or "playing",
+                    path=instancePath(a), animId=a.AnimationId or ""})
+            end
+        end
+    end)
+    table.sort(list, function(a,b) return (a.path or "") < (b.path or "") end)
+    caches.ANIMS = list
+    return #list
+end
+
+local function scanParts()
+    local list = {}
+    local myChar = LocalPlayer.Character
+    walkRoots({Workspace}, 60000, function(o)
+        if o:IsA("BasePart") and not (myChar and o:IsDescendantOf(myChar)) then
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=instancePath(o),
+                size=o.Size, position=o.Position, transparency=o.Transparency, material=o.Material.Name})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.PARTS = list
+    return #list
+end
+
+local function scanLights()
+    local list = {}
+    walkRoots({Workspace, Lighting}, MAX_DESC_SCAN, function(o)
+        if o:IsA("PointLight") or o:IsA("SpotLight") or o:IsA("SurfaceLight") then
+            table.insert(list, {object=o, name=o.Name, kind=o.ClassName, path=instancePath(o),
+                brightness=o.Brightness, range=o.Range, color=o.Color})
+        end
+    end)
+    table.sort(list, function(a,b) return a.path < b.path end)
+    caches.LIGHTS = list
+    return #list
+end
+
+-- ============================================================
+-- RENDERERS
+-- ============================================================
+local function makeRow(index, height, borderColor)
+    local row = round(ins("Frame", {
+        Position = UDim2.fromOffset(5, (index-1)*(height+3)+5),
+        Size = UDim2.new(1, -14, 0, height),
+        BackgroundColor3 = COLORS.surface, BorderSizePixel = 0, ZIndex = 52,
+    }, dumpList), 5)
+    stroke(row, borderColor or COLORS.line, 1)
+    return row
+end
+
+local function copyBtnOn(row, lbl, payload)
+    local b = btn(row, lbl, UDim2.new(1, -50, 0.5, -9), UDim2.fromOffset(44, 18), COLORS.accent)
+    b.TextColor3 = COLORS.bg
+    b.TextSize = 9
+    b.Font = Enum.Font.GothamBold
+    b.ZIndex = 53
+    bind(b.Activated, function()
+        local out = type(payload) == "function" and payload() or payload
+        if copyToClipboard(out) then
+            dumpStatus.Text = "Copied"
+            notify("Copied", COLORS.green)
+        else
+            dumpStatus.Text = "Clipboard blocked"
+        end
+    end)
+    return b
+end
+
+local function renderRemotes()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.REMOTES) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "REMOTES  ·  " .. shown .. "/" .. #caches.REMOTES
+    if shown == 0 then
+        label(dumpList, "No remotes match.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.REMOTES) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 28, COLORS.purple)
+            local kc = (e.kind=="RemoteFunction" and COLORS.accent)
+                or ((e.kind=="BindableEvent" or e.kind=="BindableFunction") and COLORS.yellow)
+                or COLORS.green
+            local kt = label(row, e.kind:sub(1,3):upper(), 8, kc)
+            kt.Font = Enum.Font.GothamBold
+            kt.Position = UDim2.fromOffset(5, 0)
+            kt.Size = UDim2.fromOffset(26, 28)
+            local nl = label(row, e.name, 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(34, 1)
+            nl.Size = UDim2.new(1, -180, 0, 12)
+            local pl = label(row, e.path, 8, COLORS.muted)
+            pl.Position = UDim2.fromOffset(34, 14)
+            pl.Size = UDim2.new(1, -180, 0, 12)
+            local al = label(row, e.lastArgs and argsPreview(e.lastArgs, e.argCount) or "(no args)", 8, COLORS.orange)
+            al.Position = UDim2.new(1, -140, 0, 2)
+            al.Size = UDim2.fromOffset(84, 24)
+            al.TextWrapped = true
+            copyBtnOn(row, "FIRE", function()
+                if not (e.remote and e.remote.Parent) then return "" end
+                pcall(function()
+                    if e.kind=="RemoteFunction" then e.remote:InvokeServer()
+                    elseif e.kind=="BindableFunction" then e.remote:Invoke()
+                    elseif e.kind=="BindableEvent" then e.remote:Fire()
+                    else e.remote:FireServer() end
+                end)
+                addEntry("REMOTE", "MANUAL_FIRE name=" .. quoteString(e.name) .. " path=" .. e.path)
+                return ""
+            end)
+        end
+    end
+end
+
+local function renderDecals()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.DECALS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "DECALS  ·  " .. shown .. "/" .. #caches.DECALS
+    if shown == 0 then
+        label(dumpList, "No decals.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.DECALS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 28, COLORS.pink)
+            ins("ImageLabel", {
+                Position = UDim2.fromOffset(5, 4), Size = UDim2.fromOffset(20, 20),
+                BackgroundColor3 = COLORS.elevated,
+                Image = e.texture ~= "" and e.texture or "",
+                BackgroundTransparency = 0.2, ZIndex = 53, Parent = row,
+            })
+            local nl = label(row, e.name, 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(32, 1)
+            nl.Size = UDim2.new(1, -100, 0, 12)
+            local pl = label(row, e.texture ~= "" and e.texture or "(empty)", 8, COLORS.muted)
+            pl.Position = UDim2.fromOffset(32, 14)
+            pl.Size = UDim2.new(1, -100, 0, 12)
+            copyBtnOn(row, "COPY", e.texture ~= "" and e.texture or "(empty)")
+        end
+    end
+end
+
+local function renderModels()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.MODELS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "MODELS  ·  " .. shown .. "/" .. #caches.MODELS
+    if shown == 0 then
+        label(dumpList, "No models.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.MODELS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 30, COLORS.cyan)
+            local kc = (e.kind=="Tool" and COLORS.pink)
+                or (e.kind=="MeshPart" and COLORS.cyan)
+                or (e.kind=="SpecialMesh" and COLORS.orange)
+                or (e.kind=="Accessory" and COLORS.green)
+                or (e.kind=="UnionOperation" and COLORS.red) or COLORS.accent
+            local kt = label(row, e.kind:sub(1,3):upper(), 8, kc)
+            kt.Font = Enum.Font.GothamBold
+            kt.Position = UDim2.fromOffset(5, 0)
+            kt.Size = UDim2.fromOffset(28, 30)
+            local nl = label(row, e.name, 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(36, 1)
+            nl.Size = UDim2.new(1, -150, 0, 12)
+            local stats = ""
+            if e.partCount > 0 then stats = e.partCount .. "p" end
+            if e.childCount > 0 then stats = stats .. (stats ~= "" and " " or "") .. e.childCount .. "c" end
+            if e.meshId ~= "" then stats = stats .. (stats ~= "" and " " or "") .. "mesh" end
+            if stats == "" then stats = "-" end
+            local sl = label(row, stats .. "  " .. e.path, 8, COLORS.muted)
+            sl.Position = UDim2.fromOffset(36, 15)
+            sl.Size = UDim2.new(1, -150, 0, 12)
+            copyBtnOn(row, "COPY", table.concat({"name: " .. e.name, "kind: " .. e.kind,
+                "path: " .. e.path, "meshId: " .. e.meshId, "textureId: " .. e.textureId,
+                "parts: " .. e.partCount, "children: " .. e.childCount}, "\n"))
+        end
+    end
+end
+
+local function renderAssets()
+    clearList()
+    local a = caches.ASSETS
+    if not a.Sounds then a = {Sounds={}, Animations={}, Particles={}, Tools={}, Images={}, Meshes={}} end
+    local total = #a.Sounds + #a.Animations + #a.Particles + #a.Tools + #a.Images + #a.Meshes
+    dumpHeader.Text = "ASSETS  ·  " .. total
+    local y = 5
+    local function sec(title, items, color)
+        if #items == 0 then return end
+        local h = label(dumpList, title .. " (" .. #items .. ")", 10, color)
+        h.Font = Enum.Font.GothamBold
+        h.Position = UDim2.fromOffset(8, y)
+        h.Size = UDim2.new(1, -16, 0, 14)
+        h.ZIndex = 53
+        y = y + 16
+        for _, it in ipairs(items) do
+            if match(it.name, it.path) then
+                local row = round(ins("Frame", {
+                    Position = UDim2.fromOffset(8, y),
+                    Size = UDim2.new(1, -20, 0, 18),
+                    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0, ZIndex = 52,
+                }, dumpList), 3)
+                stroke(row, COLORS.line)
+                local l = label(row, it.id and (it.name .. " — " .. it.id) or it.name, 9)
+                l.Position = UDim2.fromOffset(6, 0)
+                l.Size = UDim2.new(1, -12, 1, 0)
+                l.ZIndex = 53
+                y = y + 20
+            end
+        end
+        y = y + 4
+    end
+    sec("Sounds", a.Sounds, COLORS.accent2)
+    sec("Animations", a.Animations, COLORS.orange)
+    sec("Particles", a.Particles, COLORS.pink)
+    sec("Tools", a.Tools, COLORS.green)
+    sec("Images", a.Images, COLORS.purple)
+    sec("Meshes", a.Meshes, COLORS.cyan)
+    dumpList.CanvasSize = UDim2.fromOffset(0, y + 16)
+end
+
+local function renderScripts()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.SCRIPTS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "SCRIPTS  ·  " .. shown .. "/" .. #caches.SCRIPTS
+    if shown == 0 then
+        label(dumpList, "No scripts.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.SCRIPTS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 30, COLORS.yellow)
+            local kt = label(row, e.kind:sub(1,3):upper(), 8, COLORS.yellow)
+            kt.Font = Enum.Font.GothamBold
+            kt.Position = UDim2.fromOffset(5, 0)
+            kt.Size = UDim2.fromOffset(28, 30)
+            local nl = label(row, e.name .. (e.disabled and "  [off]" or ""), 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(36, 1)
+            nl.Size = UDim2.new(1, -150, 0, 12)
+            local pl = label(row, e.path .. "  (" .. e.sourceLen .. " bytes)", 8, COLORS.muted)
+            pl.Position = UDim2.fromOffset(36, 15)
+            pl.Size = UDim2.new(1, -150, 0, 12)
+            copyBtnOn(row, "SOURCE", e.source)
+        end
+    end
+end
+
+local function renderProps()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.PROPS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "PROPS  ·  " .. shown .. "/" .. #caches.PROPS
+    if shown == 0 then
+        label(dumpList, "No props.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.PROPS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 28, COLORS.orange)
+            local nl = label(row, e.name .. " [" .. e.material .. "]", 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(6, 1)
+            nl.Size = UDim2.new(1, -140, 0, 12)
+            local il = label(row, string.format("size %.1f,%.1f,%.1f  pos %.0f,%.0f,%.0f",
+                e.size.X, e.size.Y, e.size.Z, e.position.X, e.position.Y, e.position.Z), 8, COLORS.muted)
+            il.Position = UDim2.fromOffset(6, 14)
+            il.Size = UDim2.new(1, -140, 0, 12)
+            copyBtnOn(row, "COPY", table.concat({"name: " .. e.name, "path: " .. e.path,
+                "material: " .. e.material,
+                string.format("size: %.3f,%.3f,%.3f", e.size.X, e.size.Y, e.size.Z),
+                string.format("pos: %.3f,%.3f,%.3f", e.position.X, e.position.Y, e.position.Z)}, "\n"))
+        end
+    end
+end
+
+local function renderValues()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.VALUES) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "VALUES  ·  " .. shown .. "/" .. #caches.VALUES
+    if shown == 0 then
+        label(dumpList, "No values.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.VALUES) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 24, COLORS.cyan)
+            local kt = label(row, e.kind:sub(1,3):upper(), 8, COLORS.cyan)
+            kt.Font = Enum.Font.GothamBold
+            kt.Position = UDim2.fromOffset(5, 0)
+            kt.Size = UDim2.fromOffset(28, 24)
+            local nl = label(row, e.name .. "  =  " .. e.value, 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(36, 0)
+            nl.Size = UDim2.new(1, -100, 1, 0)
+            copyBtnOn(row, "COPY", e.value)
+        end
+    end
+end
+
+local function renderSounds()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.SOUNDS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "SOUNDS  ·  " .. shown .. "/" .. #caches.SOUNDS
+    if shown == 0 then
+        label(dumpList, "No sounds.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.SOUNDS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 26, COLORS.accent2)
+            local nl = label(row, e.name .. (e.playing and " [PLAY]" or ""), 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(6, 1)
+            nl.Size = UDim2.new(1, -100, 0, 12)
+            local il = label(row, e.soundId .. "  vol " .. e.volume, 8, COLORS.muted)
+            il.Position = UDim2.fromOffset(6, 13)
+            il.Size = UDim2.new(1, -100, 0, 12)
+            copyBtnOn(row, "ID", e.soundId)
+        end
+    end
+end
+
+local function renderAnims()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.ANIMS) do if match(e.name or "", e.path or "") then shown = shown + 1 end end
+    dumpHeader.Text = "ANIMS  ·  " .. shown .. "/" .. #caches.ANIMS
+    if shown == 0 then
+        label(dumpList, "No animations.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.ANIMS) do
+        if match(e.name or "", e.path or "") then
+            i = i + 1
+            local row = makeRow(i, 26, COLORS.orange)
+            local nl = label(row, e.name or "?", 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(6, 1)
+            nl.Size = UDim2.new(1, -100, 0, 12)
+            local il = label(row, e.animId or "", 8, COLORS.muted)
+            il.Position = UDim2.fromOffset(6, 13)
+            il.Size = UDim2.new(1, -100, 0, 12)
+            copyBtnOn(row, "ID", e.animId or "")
+        end
+    end
+end
+
+local function renderParts()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.PARTS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "PARTS  ·  " .. shown .. "/" .. #caches.PARTS
+    if shown == 0 then
+        label(dumpList, "No parts.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.PARTS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 26, COLORS.red)
+            local nl = label(row, e.name .. " [" .. e.kind .. "]", 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(6, 1)
+            nl.Size = UDim2.new(1, -100, 0, 12)
+            local il = label(row, string.format("%s  %.1f,%.1f,%.1f", e.material, e.size.X, e.size.Y, e.size.Z), 8, COLORS.muted)
+            il.Position = UDim2.fromOffset(6, 13)
+            il.Size = UDim2.new(1, -100, 0, 12)
+            copyBtnOn(row, "COPY", e.path)
+        end
+    end
+end
+
+local function renderLights()
+    clearList()
+    local shown = 0
+    for _, e in ipairs(caches.LIGHTS) do if match(e.name, e.path) then shown = shown + 1 end end
+    dumpHeader.Text = "LIGHTS  ·  " .. shown .. "/" .. #caches.LIGHTS
+    if shown == 0 then
+        label(dumpList, "No lights.", 10, COLORS.muted).Position = UDim2.fromOffset(10, 10)
+        return
+    end
+    local i = 0
+    for _, e in ipairs(caches.LIGHTS) do
+        if match(e.name, e.path) then
+            i = i + 1
+            local row = makeRow(i, 26, COLORS.yellow)
+            local nl = label(row, e.name .. " [" .. e.kind .. "]", 10)
+            nl.Font = Enum.Font.GothamBold
+            nl.Position = UDim2.fromOffset(6, 1)
+            nl.Size = UDim2.new(1, -100, 0, 12)
+            local il = label(row, string.format("brightness %.1f  range %.1f", e.brightness, e.range), 8, COLORS.muted)
+            il.Position = UDim2.fromOffset(6, 13)
+            il.Size = UDim2.new(1, -100, 0, 12)
+            copyBtnOn(row, "COPY", e.path)
+        end
+    end
+end
+
+local renderers = {
+    REMOTES=renderRemotes, DECALS=renderDecals, MODELS=renderModels,
+    ASSETS=renderAssets, SCRIPTS=renderScripts, PROPS=renderProps,
+    VALUES=renderValues, SOUNDS=renderSounds, ANIMS=renderAnims,
+    PARTS=renderParts, LIGHTS=renderLights,
+}
+
+local function renderDump()
+    local fn = renderers[dumpTab]
+    if fn then pcall(fn) end
+end
+
+local function setTab(name)
+    dumpTab = name
+    local tabList = {
+        {remotesTab,"REMOTES",COLORS.purple},{decalsTab,"DECALS",COLORS.pink},
+        {modelsTab,"MODELS",COLORS.cyan},{assetsTab,"ASSETS",COLORS.green},
+        {scriptsTab,"SCRIPTS",COLORS.yellow},{propsTab,"PROPS",COLORS.orange},
+        {valuesTab,"VALUES",COLORS.cyan},{soundsTab,"SOUNDS",COLORS.accent2},
+        {animsTab,"ANIMS",COLORS.orange},{partsTab,"PARTS",COLORS.red},
+        {lightTab,"LIGHTS",COLORS.yellow},
+    }
+    for _, t in ipairs(tabList) do
+        local b, n, c = t[1], t[2], t[3]
+        if n == name then
+            b.BackgroundColor3 = c
+            b.TextColor3 = COLORS.bg
+        else
+            b.BackgroundColor3 = COLORS.elevated
+            b.TextColor3 = COLORS.fg
+        end
+    end
+    playAllNoArgs.Visible = (name == "REMOTES")
+    playAllWithArgs.Visible = (name == "REMOTES")
+    dumpStatus.Text = "Tab: " .. name
+    renderDump()
+end
+
+local function doScan(name)
+    if name=="REMOTES" then
+        local n = scanRemotes()
+        for _, e in ipairs(caches.REMOTES) do hookRemoteArgs(e.remote) end
+        return n
+    elseif name=="DECALS" then return scanDecals()
+    elseif name=="MODELS" then return scanModels()
+    elseif name=="ASSETS" then return scanAssets()
+    elseif name=="SCRIPTS" then return scanScripts()
+    elseif name=="PROPS" then return scanProps()
+    elseif name=="VALUES" then return scanValues()
+    elseif name=="SOUNDS" then return scanSounds()
+    elseif name=="ANIMS" then return scanAnims()
+    elseif name=="PARTS" then return scanParts()
+    elseif name=="LIGHTS" then return scanLights()
+    end
+    return 0
+end
+
+local function openTab(name)
+    local n = doScan(name)
+    setTab(name)
+    dumpPanel.Visible = true
+    addEntry("SYSTEM", "DUMP tab=" .. name .. " count=" .. n)
+    notify(name .. ": " .. n, COLORS.accent)
+end
+
+bind(remotesTab.Activated, function() openTab("REMOTES") end)
+bind(decalsTab.Activated, function() openTab("DECALS") end)
+bind(modelsTab.Activated, function() openTab("MODELS") end)
+bind(assetsTab.Activated, function() openTab("ASSETS") end)
+bind(scriptsTab.Activated, function() openTab("SCRIPTS") end)
+bind(propsTab.Activated, function() openTab("PROPS") end)
+bind(valuesTab.Activated, function() openTab("VALUES") end)
+bind(soundsTab.Activated, function() openTab("SOUNDS") end)
+bind(animsTab.Activated, function() openTab("ANIMS") end)
+bind(partsTab.Activated, function() openTab("PARTS") end)
+bind(lightTab.Activated, function() openTab("LIGHTS") end)
+
+bind(remotesBtn.Activated, function() openTab("REMOTES") end)
+bind(decalsBtn.Activated, function() openTab("DECALS") end)
+bind(modelsBtn.Activated, function() openTab("MODELS") end)
+bind(assetsBtn.Activated, function() openTab("ASSETS") end)
+bind(scriptsBtn.Activated, function() openTab("SCRIPTS") end)
+bind(propsBtn.Activated, function() openTab("PROPS") end)
+bind(valuesBtn.Activated, function() openTab("VALUES") end)
+bind(soundsBtn.Activated, function() openTab("SOUNDS") end)
+bind(animsBtn.Activated, function() openTab("ANIMS") end)
+bind(partsBtn.Activated, function() openTab("PARTS") end)
+bind(lightsBtn.Activated, function() openTab("LIGHTS") end)
+
+bind(dumpAllBtn.Activated, function()
+    local tabs = {"REMOTES","DECALS","MODELS","ASSETS","SCRIPTS","PROPS","VALUES","SOUNDS","ANIMS","PARTS","LIGHTS"}
+    local counts = {}
+    for _, t in ipairs(tabs) do counts[#counts+1] = t .. "=" .. doScan(t) end
+    setTab("REMOTES")
+    dumpPanel.Visible = true
+    notify("Dumped all tabs", COLORS.green)
+    addEntry("SYSTEM", "DUMP_ALL " .. table.concat(counts, " "))
+end)
+
+bind(playAllBtn.Activated, function()
+    if #caches.REMOTES == 0 then
+        scanRemotes()
+        for _, e in ipairs(caches.REMOTES) do hookRemoteArgs(e.remote) end
+    end
+    local fired, failed = 0, 0
+    for _, e in ipairs(caches.REMOTES) do
+        if e.remote and e.remote.Parent then
+            local ok = pcall(function()
+                if e.kind=="RemoteFunction" then e.remote:InvokeServer()
+                elseif e.kind=="BindableFunction" then e.remote:Invoke()
+                elseif e.kind=="BindableEvent" then e.remote:Fire()
+                else e.remote:FireServer() end
+            end)
+            if ok then fired = fired + 1 else failed = failed + 1 end
+        end
+    end
+    notify("Played " .. fired, COLORS.red)
+    addEntry("SYSTEM", "PLAY_ALL fired=" .. fired .. " failed=" .. failed)
+end)
+
+bind(playAllNoArgs.Activated, function()
+    if #caches.REMOTES == 0 then dumpStatus.Text = "No remotes." return end
+    local fired, failed = 0, 0
+    for _, e in ipairs(caches.REMOTES) do
+        if e.remote and e.remote.Parent then
+            local ok = pcall(function()
+                if e.kind=="RemoteFunction" then e.remote:InvokeServer()
+                elseif e.kind=="BindableFunction" then e.remote:Invoke()
+                elseif e.kind=="BindableEvent" then e.remote:Fire()
+                else e.remote:FireServer() end
+            end)
+            if ok then fired = fired + 1 else failed = failed + 1 end
+        end
+    end
+    dumpStatus.Text = "Fired " .. fired .. ", failed " .. failed
+end)
+
+bind(playAllWithArgs.Activated, function()
+    if #caches.REMOTES == 0 then dumpStatus.Text = "No remotes." return end
+    local fired, skipped, failed = 0, 0, 0
+    for _, e in ipairs(caches.REMOTES) do
+        if e.remote and e.remote.Parent then
+            if e.lastArgs and #e.lastArgs > 0 then
+                local ok = pcall(function()
+                    if e.kind=="RemoteFunction" then e.remote:InvokeServer(table.unpack(e.lastArgs))
+                    else e.remote:FireServer(table.unpack(e.lastArgs)) end
+                end)
+                if ok then fired = fired + 1 else failed = failed + 1 end
+            else
+                skipped = skipped + 1
+            end
+        end
+    end
+    dumpStatus.Text = "Args: " .. fired .. ", skipped " .. skipped
+end)
+
+bind(backBtn.Activated, function() dumpPanel.Visible = false end)
+bind(rescanBtn.Activated, function()
+    local n = doScan(dumpTab)
+    renderDump()
+    dumpStatus.Text = "Rescanned " .. n
+end)
+
+bind(exportBtn.Activated, function()
+    local lines = {}
+    lines[#lines+1] = "-- " .. HUB_NAME .. " dump: " .. dumpTab
+    lines[#lines+1] = "-- " .. os.date("%Y-%m-%d %H:%M:%S")
+    lines[#lines+1] = ""
+    if dumpTab == "REMOTES" then
+        lines[#lines+1] = "=== REMOTES (" .. #caches.REMOTES .. ") ==="
+        for i, e in ipairs(caches.REMOTES) do
+            lines[#lines+1] = string.format("[%d] %s %s", i, e.kind, e.path)
+            lines[#lines+1] = "    args: " .. (e.lastArgs and argsPreview(e.lastArgs, e.argCount) or "(none)")
+        end
+    else
+        lines[#lines+1] = "=== " .. dumpTab .. " ==="
+        local rows = caches[dumpTab] or {}
+        for i, e in ipairs(rows) do
+            lines[#lines+1] = string.format("[%d] %s  %s", i, tostring(e.name), tostring(e.path))
+        end
+    end
+    if copyToClipboard(table.concat(lines, "\n")) then
+        dumpStatus.Text = "Exported"
+        notify("Exported", COLORS.green)
+    else
+        dumpStatus.Text = "Clipboard blocked"
+    end
+end)
+
+bind(dumpSearch:GetPropertyChangedSignal("Text"), function()
+    dumpSearchText = dumpSearch.Text or ""
+    if state.liveSearch then renderDump() end
+end)
+
+-- ============================================================
+-- MAIN ACTIONS
+-- ============================================================
+local function hideUI()
+    state.minimized = true
+    main.Visible = false
+    compactPill.Visible = true
+    local cam = Workspace.CurrentCamera
+    if cam then
+        if state.dockSide == "left" then
+            compactPill.Position = UDim2.new(0, 8, 0.5, -18)
+        elseif state.dockSide == "top" then
+            compactPill.Position = UDim2.new(0.5, -70, 0, 8)
+        elseif state.dockSide == "bottom" then
+            compactPill.Position = UDim2.new(0.5, -70, 1, -44)
+        else
+            compactPill.Position = UDim2.new(1, -148, 0.5, -18)
+        end
+    end
+end
+
+local function showUI()
+    state.minimized = false
+    main.Visible = true
+    compactPill.Visible = false
+end
+
+bind(minBtn.Activated, hideUI)
+bind(compactPill.Activated, showUI)
+bind(dockBtn.Activated, function()
+    if state.dockSide == "right" then state.dockSide = "left"
+    elseif state.dockSide == "left" then state.dockSide = "top"
+    elseif state.dockSide == "top" then state.dockSide = "bottom"
+    else state.dockSide = "right" end
+    if state.minimized then hideUI() else
+        local cam = Workspace.CurrentCamera
+        if cam then
+            if state.dockSide == "left" then
+                main.Position = UDim2.new(0, 8 + WIN_W/2, 0.5, 0)
+            elseif state.dockSide == "right" then
+                main.Position = UDim2.new(1, -8 - WIN_W/2, 0.5, 0)
+            elseif state.dockSide == "top" then
+                main.Position = UDim2.new(0.5, 0, 0, 8 + WIN_H/2)
+            else
+                main.Position = UDim2.new(0.5, 0, 1, -8 - WIN_H/2)
+            end
+        end
+    end
+    notify("Dock: " .. state.dockSide, COLORS.accent)
+end)
+
+bind(closeBtn.Activated, function()
+    state.closed = true
+    state.alive = false
+    if type(ENV.MorantActionRecorder) == "table" then ENV.MorantActionRecorder = nil end
+    gui:Destroy()
+end)
+
+bind(copyButton.Activated, function()
+    if copyToClipboard(report()) then
+        notify("Log copied", COLORS.green)
+    else
+        notify("Clipboard blocked", COLORS.orange)
+    end
+end)
+
+bind(saveButton.Activated, function()
+    state.saveSequence = state.saveSequence + 1
+    local content = report()
+    local fname = string.format("%s_%s_%d.txt", HUB_TAG, os.date("%Y%m%d_%H%M%S"), state.saveSequence)
+    local ok = false
+    if type(writefile) == "function" then ok = pcall(writefile, fname, content) end
+    if ok then
+        notify("Saved " .. fname, COLORS.green)
+    elseif copyToClipboard(content) then
+        notify("Copied instead", COLORS.orange)
+    else
+        notify("Save failed", COLORS.red)
+    end
+end)
+
+bind(clearButton.Activated, function()
+    state.entries = {}
+    state.head, state.count = 1, 0
+    state.overwritten, state.suppressed = 0, 0
+    state.dirty = true
+    logText.Text = "Cleared."
+end)
+
+bind(pauseButton.Activated, function()
+    state.paused = not state.paused
+    pauseButton.Text = state.paused and "RESUME" or "PAUSE"
+    pauseButton.BackgroundColor3 = state.paused and COLORS.green or COLORS.elevated
+end)
+
+bind(filterButton.Activated, function()
+    local idx = 1
+    for i, n in ipairs(CATEGORIES) do
+        if n == state.filter then idx = i; break end
+    end
+    idx = idx % #CATEGORIES + 1
+    state.filter = CATEGORIES[idx]
+    filterButton.Text = state.filter
+    state.dirty = true
+end)
+
+for key, btn in pairs(toggleButtons) do
+    local function refresh()
+        local on = state.capture[key]
+        btn.BackgroundColor3 = on and COLORS.accent or COLORS.elevated
+        btn.TextColor3 = on and COLORS.bg or COLORS.muted
+    end
+    refresh()
+    bind(btn.Activated, function()
+        state.capture[key] = not state.capture[key]
+        refresh()
+        addEntry("SYSTEM", "TOGGLE " .. key .. "=" .. tostring(state.capture[key]))
+    end)
+end
+
+-- DRAG
+local dragStart, startPos, dragging = nil, nil, false
+bind(topbar.InputBegan, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        local conn
+        conn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+                if conn then conn:Disconnect() end
+            end
+        end)
+    end
+end)
+bind(UserInputService.InputChanged, function(input)
+    if not dragging or state.minimized then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- ============================================================
+-- LIVE CAPTURE
+-- ============================================================
+local function trackGui(g)
+    if state.guiWatched >= MAX_GUI_WATCHES then return end
+    if not g or state.trackedGui[g] then return end
+    state.trackedGui[g] = {}
+    state.guiWatched = state.guiWatched + 1
+    addEntry("GUI", string.format("CREATED class=%s name=%s path=%s",
+        g.ClassName, quoteString(g.Name), instancePath(g)),
+        "gui.create:" .. instancePath(g), 0.05, "GUI_CREATED")
+    bind(g:GetPropertyChangedSignal("Visible"), function()
+        addEntry("GUI", string.format("VISIBLE class=%s name=%s visible=%s path=%s",
+            g.ClassName, quoteString(g.Name), tostring(g.Visible), instancePath(g)),
+            "gui.vis:" .. instancePath(g), 0.12, "GUI_VISIBLE")
+    end, g)
+    bind(g:GetPropertyChangedSignal("Text"), function()
+        local ok, txt = pcall(function() return g.Text end)
+        if ok then
+            addEntry("GUI", string.format("TEXT class=%s name=%s text=%s path=%s",
+                g.ClassName, quoteString(g.Name), quoteString(txt), instancePath(g)),
+                "gui.txt:" .. instancePath(g), 0.15, "GUI_TEXT")
+        end
+    end, g)
+end
+
+local function trackRemote(r)
+    if state.remoteCount >= MAX_REMOTE_WATCHES then return end
+    if not r or state.trackedRemotes[r] then return end
+    if not (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent") or r:IsA("RemoteFunction")) then return end
+    state.trackedRemotes[r] = true
+    state.remoteCount = state.remoteCount + 1
+    if r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent") then
+        bind(r.OnClientEvent, function(...)
+            local argc = select("#", ...)
+            local args = {...}
+            local render
+            if state.capture.ARGS then render = argsPreview(args, argc)
+            else
+                local t = {}
+                for i = 1, argc do t[i] = typeof(args[i]) end
+                render = "(" .. table.concat(t, ",") .. ")"
+            end
+            state.lastInteraction = "RECV " .. r.Name .. " " .. render
+            addEntry("REMOTE", string.format("RECV kind=%s name=%s path=%s argc=%d args=%s",
+                r.ClassName, quoteString(r.Name), instancePath(r), argc, render),
+                "remote.recv:" .. instancePath(r), 0.05, "REMOTE_RECV")
+        end, "remote_" .. tostring(r))
+    end
+end
+
+local function trackInteract(p)
+    if state.interactCount >= MAX_INTERACT_WATCHES then return end
+    if not p or state.trackedInteract[p] then return end
+    if not (p:IsA("ProximityPrompt") or p:IsA("ClickDetector")) then return end
+    state.trackedInteract[p] = true
+    state.interactCount = state.interactCount + 1
+    if p:IsA("ProximityPrompt") then
+        bind(p.Triggered, function(plr)
+            state.lastInteraction = "PROMPT " .. p.Name
+            addEntry("INTERACT", string.format("TRIGGER kind=%s name=%s action=%s object=%s path=%s player=%s",
+                p.ClassName, quoteString(p.Name), quoteString(p.ActionText), quoteString(p.ObjectText),
+                instancePath(p), plr and plr.Name or "local"),
+                "interact.trigger:" .. instancePath(p), 0.1, "INTERACT_TRIGGER")
+        end)
+    elseif p:IsA("ClickDetector") then
+        bind(p.MouseClick, function(plr)
+            state.lastInteraction = "CLICK " .. p.Name
+            addEntry("INTERACT", string.format("CLICK kind=%s name=%s path=%s player=%s",
+                p.ClassName, quoteString(p.Name), instancePath(p), plr and plr.Name or "local"),
+                "interact.click:" .. instancePath(p), 0.1, "INTERACT_CLICK")
+        end)
+    end
+end
+
+local function trackAudio(s)
+    if state.audioCount >= MAX_AUDIO_WATCHES then return end
+    if not s or state.trackedAudio[s] then return end
+    if not s:IsA("Sound") then return end
+    state.trackedAudio[s] = true
+    state.audioCount = state.audioCount + 1
+    bind(s:GetPropertyChangedSignal("Playing"), function()
+        addEntry("AUDIO", string.format("PLAYING name=%s playing=%s id=%s path=%s",
+            quoteString(s.Name), tostring(s.Playing), quoteString(s.SoundId), instancePath(s)),
+            "audio.playing:" .. instancePath(s), 0.1, "AUDIO_PLAYING")
+    end)
+end
+
+local function scanExisting()
+    local roots = {Workspace, ReplicatedStorage, PlayerGui, LocalPlayer, SoundService,
+        game:GetService("StarterGui"), game:GetService("StarterPlayer"), Lighting, Chat}
+    walkRoots(roots, MAX_DESC_SCAN, function(obj)
+        if obj:IsA("GuiObject") then trackGui(obj)
+        elseif obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") or obj:IsA("RemoteFunction") then trackRemote(obj)
+        elseif obj:IsA("ProximityPrompt") or obj:IsA("ClickDetector") then trackInteract(obj)
+        elseif obj:IsA("Sound") then trackAudio(obj)
+        end
+    end)
+    addEntry("SYSTEM", string.format("BOOT gui=%d rem=%d int=%d aud=%d",
+        state.guiWatched, state.remoteCount, state.interactCount, state.audioCount))
+end
+
+bind(game.DescendantAdded, function(obj)
+    pcall(function()
+        if obj:IsA("GuiObject") then trackGui(obj)
+        elseif obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") or obj:IsA("RemoteFunction") then trackRemote(obj)
+        elseif obj:IsA("ProximityPrompt") or obj:IsA("ClickDetector") then trackInteract(obj)
+        elseif obj:IsA("Sound") then trackAudio(obj)
+        elseif obj:IsA("Tool") then
+            addEntry("TOOL", string.format("ADDED name=%s path=%s", quoteString(obj.Name), instancePath(obj)),
+                "tool.add:" .. instancePath(obj), 0.1, "TOOL_ADDED")
+        end
+    end)
+end)
+
+bind(UserInputService.InputBegan, function(input, processed)
+    if state.capture.INPUT == false then return end
+    local kind = input.UserInputType.Name
+    local kc = input.KeyCode and input.KeyCode.Name or "None"
+    if kind == "Keyboard" then
+        addEntry("INPUT", string.format("KEYDOWN key=%s processed=%s", kc, tostring(processed)),
+            "input.key:" .. kc, 0.03, "INPUT_KEY")
+    elseif kind == "MouseButton1" or kind == "MouseButton2" or kind == "MouseButton3" then
+        addEntry("INPUT", string.format("MOUSE button=%s processed=%s", kind, tostring(processed)),
+            "input.mouse:" .. kind, 0.03, "INPUT_MOUSE")
+    end
+end)
+
+local function trackCharacter(ch)
+    if not ch then return end
+    addEntry("CHARACTER", string.format("SPAWN name=%s path=%s", quoteString(ch.Name), instancePath(ch)),
+        "character.spawn", 0.1, "CHARACTER_SPAWN")
+    bind(ch.ChildAdded, function(c)
+        addEntry("CHARACTER", string.format("CHILD_ADDED name=%s class=%s", quoteString(c.Name), c.ClassName),
+            "character.child:" .. instancePath(c), 0.1, "CHARACTER_CHILD")
+    end)
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if hum then
+        bind(hum:GetPropertyChangedSignal("Health"), function()
+            addEntry("CHARACTER", string.format("HEALTH name=%s health=%.1f max=%.1f",
+                quoteString(ch.Name), hum.Health, hum.MaxHealth),
+                "character.health:" .. ch.Name, 0.15, "CHARACTER_HEALTH")
+        end)
+        bind(hum.Died, function()
+            addEntry("CHARACTER", string.format("DIED name=%s", quoteString(ch.Name)),
+                "character.died", 0.1, "CHARACTER_DIED")
+        end)
+    end
+end
+
+bind(LocalPlayer.CharacterAdded, trackCharacter)
+if LocalPlayer.Character then trackCharacter(LocalPlayer.Character) end
+
+bind(Players.PlayerAdded, function(p)
+    addEntry("PLAYER", string.format("ADDED name=%s userId=%d", quoteString(p.Name), p.UserId),
+        "player.add:" .. tostring(p.UserId), 0.1, "PLAYER_ADDED")
+end)
+bind(Players.PlayerRemoving, function(p)
+    addEntry("PLAYER", string.format("REMOVING name=%s userId=%d", quoteString(p.Name), p.UserId),
+        "player.remove:" .. tostring(p.UserId), 0.1, "PLAYER_REMOVED")
+end)
+bind(Workspace.ChildAdded, function(c)
+    addEntry("WORLD", string.format("ADDED class=%s name=%s path=%s",
+        c.ClassName, quoteString(c.Name), instancePath(c)),
+        "world.add:" .. instancePath(c), 0.08, "WORLD_ADDED")
+end)
+bind(Workspace.ChildRemoved, function(c)
+    addEntry("WORLD", string.format("REMOVED class=%s name=%s", c.ClassName, quoteString(c.Name)),
+        "world.remove:" .. c.Name, 0.08, "WORLD_REMOVED")
+end)
+
+bind(UserInputService.InputBegan, function(input, processed)
+    if processed then return end
+    if input.KeyCode == state.hotkey then
+        if state.minimized then showUI() else hideUI() end
+    end
+end)
+
+-- RENDER LOOP
+local lastRender = 0
+bind(RunService.RenderStepped, function()
+    if not state.alive then return end
+    if not state.dirty then return end
+    local now = os.clock()
+    if now - lastRender < 0.1 then return end
+    lastRender = now
+    state.dirty = false
+
+    local cnt = #(caches[dumpTab] or {})
+    statsTop.Text = string.format("%d events  ·  %d stored  ·  %d suppressed  ·  %d in tab",
+        state.lifetime, state.count, state.suppressed, cnt)
+    local parts = {}
+    for _, c in ipairs({"REMOTE","GUI","INTERACT","INPUT","CHARACTER","TOOL","PLAYER","WORLD","AUDIO"}) do
+        parts[#parts+1] = c:sub(1,3) .. " " .. state.stats[c]
+    end
+    statsBot.Text = table.concat(parts, "  ")
+    statsBot2.Text = string.format("watching: GUI %d  ·  REM %d  ·  INT %d  ·  AUD %d  ·  ARGS %s",
+        state.guiWatched, state.remoteCount, state.interactCount, state.audioCount,
+        state.capture.ARGS and "ON" or "OFF")
+
+    if not dumpPanel.Visible then
+        local lines = getEntries(state.filter, MAX_ON_SCREEN)
+        if #lines == 0 then logText.Text = "Waiting... (" .. state.filter .. ")"
+        else logText.Text = table.concat(lines, "\n") end
+    end
+end)
+
+ENV.MorantActionRecorder = {
+    Destroy = function() state.alive = false; if gui and gui.Parent then gui:Destroy() end end,
+    report = report, state = state, caches = caches,
+}
+
+scanExisting()
+addEntry("SYSTEM", "BOOT " .. HUB_NAME .. " v4.2 | ARGS=" .. tostring(state.capture.ARGS))
+notify(HUB_NAME .. " v4.2", COLORS.accent)
