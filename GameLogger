@@ -80,6 +80,7 @@ local state = {
     worldScanned = 0,
     lastInteraction = "none",
     gameName = game.Name,
+    saveSequence = 0,
 }
 
 local function bind(signal, callback, ownership)
@@ -384,15 +385,21 @@ local tools = instance("Frame", {
     Position = UDim2.fromOffset(14, 143), Size = UDim2.new(1, -28, 0, 34),
     BackgroundTransparency = 1,
 }, main)
-local copyButton = button(tools, "COPY ALL", UDim2.fromOffset(0, 0), UDim2.fromOffset(120, 34), COLORS.accent)
+local copyButton = button(tools, "COPY ALL", UDim2.fromOffset(0, 0), UDim2.fromOffset(100, 34), COLORS.accent)
 copyButton.TextColor3 = COLORS.background
 copyButton.Font = Enum.Font.GothamBold
-local saveButton = button(tools, "SAVE TXT", UDim2.fromOffset(128, 0), UDim2.fromOffset(116, 34), COLORS.green)
+local saveButton = button(tools, "SAVE TXT", UDim2.fromOffset(105, 0), UDim2.fromOffset(90, 34), COLORS.green)
 saveButton.TextColor3 = COLORS.background
 saveButton.Font = Enum.Font.GothamBold
-local clearButton = button(tools, "CLEAR", UDim2.fromOffset(252, 0), UDim2.fromOffset(85, 34))
-local pauseButton = button(tools, "PAUSE", UDim2.fromOffset(345, 0), UDim2.fromOffset(85, 34))
-local filterButton = button(tools, "FILTER: ALL", UDim2.fromOffset(438, 0), UDim2.new(1, -438, 0, 34))
+local clearButton = button(tools, "CLEAR", UDim2.fromOffset(200, 0), UDim2.fromOffset(70, 34))
+local pauseButton = button(tools, "PAUSE", UDim2.fromOffset(275, 0), UDim2.fromOffset(70, 34))
+local dumpButton = button(tools, "DUMP REMOTES", UDim2.fromOffset(350, 0), UDim2.fromOffset(110, 34), COLORS.elevated)
+dumpButton.TextColor3 = COLORS.accent
+dumpButton.Font = Enum.Font.GothamBold
+local playAllButton = button(tools, "PLAY ALL", UDim2.fromOffset(465, 0), UDim2.fromOffset(80, 34), COLORS.red)
+playAllButton.TextColor3 = COLORS.background
+playAllButton.Font = Enum.Font.GothamBold
+local filterButton = button(tools, "FILTER: ALL", UDim2.fromOffset(550, 0), UDim2.new(1, -550, 0, 34))
 
 local toggles = instance("Frame", {
     Position = UDim2.fromOffset(14, 184), Size = UDim2.new(1, -28, 0, 66),
@@ -444,6 +451,328 @@ local footer = textLabel(main,
     11, COLORS.muted)
 footer.Position = UDim2.fromOffset(18, 484)
 footer.Size = UDim2.new(1, -36, 0, 33)
+
+-- ============================================================
+-- REMOTE DUMP / PLAYER PANEL
+-- ============================================================
+
+local remoteCache = {}
+local remotePanel = round(instance("Frame", {
+    Name = "RemotePanel",
+    Visible = false,
+    Position = UDim2.new(0, 15, 0, 60),
+    Size = UDim2.new(1, -30, 1, -75),
+    BackgroundColor3 = COLORS.surface,
+    BorderSizePixel = 0,
+    ZIndex = 25,
+}, main), 8)
+outline(remotePanel)
+
+local remoteHeader = textLabel(remotePanel, "REMOTE DUMP — 0 remotes", 14)
+remoteHeader.Font = Enum.Font.GothamBold
+remoteHeader.Position = UDim2.fromOffset(12, 10)
+remoteHeader.Size = UDim2.new(1, -240, 0, 22)
+remoteHeader.ZIndex = 26
+
+local remoteBack = button(remotePanel, "BACK", UDim2.new(1, -78, 0, 8), UDim2.fromOffset(66, 28))
+remoteBack.ZIndex = 26
+
+local remoteRefresh = button(remotePanel, "RESCAN", UDim2.new(1, -150, 0, 8), UDim2.fromOffset(66, 28))
+remoteRefresh.ZIndex = 26
+
+local remoteExport = button(remotePanel, "EXPORT", UDim2.new(1, -222, 0, 8), UDim2.fromOffset(66, 28), COLORS.accent)
+remoteExport.TextColor3 = COLORS.background
+remoteExport.ZIndex = 26
+
+local remotePlayAll = button(remotePanel, "PLAY ALL (no args)", UDim2.new(0, 12, 0, 40), UDim2.fromOffset(160, 28), COLORS.red)
+remotePlayAll.TextColor3 = COLORS.background
+remotePlayAll.Font = Enum.Font.GothamBold
+remotePlayAll.ZIndex = 26
+
+local remotePlayAllArgs = button(remotePanel, "PLAY ALL (last args)", UDim2.new(0, 178, 0, 40), UDim2.fromOffset(160, 28), COLORS.green)
+remotePlayAllArgs.TextColor3 = COLORS.background
+remotePlayAllArgs.Font = Enum.Font.GothamBold
+remotePlayAllArgs.ZIndex = 26
+
+local remoteStatus = textLabel(remotePanel, "Ready.", 11, COLORS.muted)
+remoteStatus.Position = UDim2.new(0, 348, 0, 44)
+remoteStatus.Size = UDim2.new(1, -360, 0, 20)
+remoteStatus.ZIndex = 26
+
+local remoteList = round(instance("ScrollingFrame", {
+    Position = UDim2.fromOffset(11, 76),
+    Size = UDim2.new(1, -22, 1, -88),
+    BackgroundColor3 = COLORS.background,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 5,
+    ScrollBarImageColor3 = COLORS.accent,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    CanvasSize = UDim2.new(),
+}, remotePanel), 6)
+remoteList.ZIndex = 26
+
+local function scanRemotes()
+    remoteCache = {}
+    local seen = {}
+    local roots = {
+        ReplicatedStorage,
+        Workspace,
+        PlayerGui,
+        LocalPlayer,
+        game:GetService("ServerScriptService"),
+        game:GetService("StarterGui"),
+        game:GetService("StarterPlayer"),
+        game:GetService("ServerStorage"),
+    }
+    for _, root in ipairs(roots) do
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if ok and list then
+            for _, obj in ipairs(list) do
+                if (obj:IsA("RemoteEvent") or obj:IsA("UnreliableRemoteEvent") or obj:IsA("RemoteFunction")) and not seen[obj] then
+                    seen[obj] = true
+                    table.insert(remoteCache, {
+                        remote = obj,
+                        name = obj.Name,
+                        kind = obj.ClassName,
+                        path = instancePath(obj),
+                        argCount = 0,
+                        lastArgs = nil,
+                    })
+                end
+            end
+        end
+    end
+    table.sort(remoteCache, function(a, b) return a.path < b.path end)
+    return #remoteCache
+end
+
+local function hookRemoteArgs(remote)
+    if remote:GetAttribute("__MorantxHooked") then return end
+    pcall(function() remote:SetAttribute("__MorantxHooked", true) end)
+    if remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent") then
+        bind(remote.OnClientEvent, function(...)
+            local argc = select("#", ...)
+            local args = {...}
+            for _, entry in ipairs(remoteCache) do
+                if entry.remote == remote then
+                    entry.argCount = argc
+                    entry.lastArgs = args
+                    break
+                end
+            end
+        end)
+    end
+end
+
+local function argsPreview(args, argc)
+    if not args then return "(none)" end
+    local pieces = {}
+    local n = argc or #args
+    for i = 1, math.min(n, 4) do
+        pieces[#pieces + 1] = summarizeValue(args[i], 0, {})
+    end
+    if n > 4 then pieces[#pieces + 1] = "..." end
+    return "(" .. table.concat(pieces, ", ") .. ")"
+end
+
+local function renderRemoteList()
+    for _, child in ipairs(remoteList:GetChildren()) do
+        if child:IsA("GuiObject") then child:Destroy() end
+    end
+    remoteHeader.Text = "REMOTE DUMP — " .. #remoteCache .. " remote(s)"
+
+    if #remoteCache == 0 then
+        local empty = textLabel(remoteList, "No remotes found. Try RESCAN.", 12, COLORS.muted)
+        empty.Position = UDim2.fromOffset(10, 10)
+        return
+    end
+
+    local rowHeight = 34
+    for i, entry in ipairs(remoteCache) do
+        local row = round(instance("Frame", {
+            Position = UDim2.fromOffset(4, (i - 1) * (rowHeight + 4) + 4),
+            Size = UDim2.new(1, -14, 0, rowHeight),
+            BackgroundColor3 = COLORS.surface,
+            BorderSizePixel = 0,
+            ZIndex = 26,
+        }, remoteList), 6)
+        outline(row)
+
+        local kindColor = entry.kind == "RemoteFunction" and COLORS.accent or COLORS.green
+        local kindLabel = textLabel(row, entry.kind == "RemoteFunction" and "RF" or "RE", 10, kindColor)
+        kindLabel.Font = Enum.Font.GothamBold
+        kindLabel.Position = UDim2.fromOffset(8, 0)
+        kindLabel.Size = UDim2.fromOffset(30, rowHeight)
+
+        local nameLabel = textLabel(row, entry.name, 12)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.Position = UDim2.fromOffset(40, 2)
+        nameLabel.Size = UDim2.new(1, -220, 0, 15)
+
+        local pathLabel = textLabel(row, entry.path, 10, COLORS.muted)
+        pathLabel.Position = UDim2.fromOffset(40, 17)
+        pathLabel.Size = UDim2.new(1, -220, 0, 14)
+
+        local argsLabel = textLabel(row, entry.lastArgs and argsPreview(entry.lastArgs, entry.argCount) or "(no args seen yet)", 10, COLORS.muted)
+        argsLabel.Position = UDim2.new(1, -175, 0, 2)
+        argsLabel.Size = UDim2.fromOffset(120, 15)
+
+        local fireBtn = button(row, "FIRE", UDim2.new(1, -95, 0.5, -12), UDim2.fromOffset(44, 24), COLORS.accent)
+        fireBtn.TextColor3 = COLORS.background
+        fireBtn.TextSize = 11
+        fireBtn.ZIndex = 27
+
+        local fireArgsBtn = button(row, "ARGS", UDim2.new(1, -48, 0.5, -12), UDim2.fromOffset(44, 24), COLORS.green)
+        fireArgsBtn.TextColor3 = COLORS.background
+        fireArgsBtn.TextSize = 11
+        fireArgsBtn.ZIndex = 27
+
+        bind(fireBtn.Activated, function()
+            if not (entry.remote and entry.remote.Parent) then
+                remoteStatus.Text = "Remote gone: " .. entry.name
+                return
+            end
+            local ok = pcall(function()
+                if entry.kind == "RemoteFunction" then
+                    entry.remote:InvokeServer()
+                else
+                    entry.remote:FireServer()
+                end
+            end)
+            if ok then
+                remoteStatus.Text = "Fired " .. entry.name .. " (no args)"
+                addEntry("REMOTE", "MANUAL_FIRE name=" .. quoteString(entry.name) .. " path=" .. entry.path .. " args=()")
+            else
+                remoteStatus.Text = "Fire failed: " .. entry.name
+            end
+        end)
+
+        bind(fireArgsBtn.Activated, function()
+            if not (entry.remote and entry.remote.Parent) then
+                remoteStatus.Text = "Remote gone: " .. entry.name
+                return
+            end
+            if not entry.lastArgs then
+                remoteStatus.Text = "No args recorded for " .. entry.name
+                return
+            end
+            local ok = pcall(function()
+                if entry.kind == "RemoteFunction" then
+                    entry.remote:InvokeServer(table.unpack(entry.lastArgs))
+                else
+                    entry.remote:FireServer(table.unpack(entry.lastArgs))
+                end
+            end)
+            if ok then
+                remoteStatus.Text = "Fired " .. entry.name .. " with " .. tostring(#entry.lastArgs) .. " arg(s)"
+                addEntry("REMOTE", "MANUAL_FIRE name=" .. quoteString(entry.name) .. " path=" .. entry.path .. " args=" .. argsPreview(entry.lastArgs, #entry.lastArgs))
+            else
+                remoteStatus.Text = "Fire ARGS failed: " .. entry.name
+            end
+        end)
+    end
+end
+
+bind(dumpButton.Activated, function()
+    local count = scanRemotes()
+    for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
+    renderRemoteList()
+    remotePanel.Visible = true
+    remoteStatus.Text = "Found " .. count .. " remote(s)."
+    addEntry("SYSTEM", "REMOTE_DUMP found=" .. count)
+end)
+
+bind(remoteBack.Activated, function()
+    remotePanel.Visible = false
+end)
+
+bind(remoteRefresh.Activated, function()
+    local count = scanRemotes()
+    for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
+    renderRemoteList()
+    remoteStatus.Text = "Rescanned: " .. count .. " remote(s)"
+    addEntry("SYSTEM", "REMOTE_RESCAN found=" .. count)
+end)
+
+bind(remoteExport.Activated, function()
+    local lines = {}
+    lines[#lines + 1] = "-- Remote dump exported by MorantxHub Game Logger"
+    lines[#lines + 1] = "-- " .. os.date("%Y-%m-%d %H:%M:%S")
+    lines[#lines + 1] = "-- Game: " .. tostring(game.Name)
+    lines[#lines + 1] = "-- PlaceId: " .. tostring(game.PlaceId)
+    lines[#lines + 1] = ""
+    for i, entry in ipairs(remoteCache) do
+        lines[#lines + 1] = string.format("[%d] %s  %s", i, entry.kind, entry.path)
+        if entry.lastArgs then
+            lines[#lines + 1] = "    last args: " .. argsPreview(entry.lastArgs, entry.argCount)
+        else
+            lines[#lines + 1] = "    last args: (none recorded)"
+        end
+    end
+    local content = table.concat(lines, "\n")
+    if copyText(content) then
+        remoteStatus.Text = "Exported " .. #remoteCache .. " remotes to clipboard"
+        addEntry("SYSTEM", "REMOTE_DUMP_EXPORTED count=" .. #remoteCache)
+    else
+        exportHeader.Text = "REMOTE DUMP (clipboard unavailable)"
+        exportBox.Text = content
+        exportFrame.Visible = true
+        remoteStatus.Text = "Clipboard blocked; manual export shown"
+    end
+end)
+
+bind(remotePlayAll.Activated, function()
+    if #remoteCache == 0 then
+        remoteStatus.Text = "No remotes to play. Run DUMP first."
+        return
+    end
+    local fired, failed = 0, 0
+    for _, entry in ipairs(remoteCache) do
+        if entry.remote and entry.remote.Parent then
+            local ok = pcall(function()
+                if entry.kind == "RemoteFunction" then
+                    entry.remote:InvokeServer()
+                else
+                    entry.remote:FireServer()
+                end
+            end)
+            if ok then fired = fired + 1 else failed = failed + 1 end
+        end
+    end
+    remoteStatus.Text = "Played " .. fired .. " remote(s), " .. failed .. " failed"
+    addEntry("SYSTEM", "PLAY_ALL fired=" .. fired .. " failed=" .. failed)
+end)
+
+bind(remotePlayAllArgs.Activated, function()
+    if #remoteCache == 0 then
+        remoteStatus.Text = "No remotes to play. Run DUMP first."
+        return
+    end
+    local fired, skipped, failed = 0, 0, 0
+    for _, entry in ipairs(remoteCache) do
+        if entry.remote and entry.remote.Parent then
+            if entry.lastArgs then
+                local ok = pcall(function()
+                    if entry.kind == "RemoteFunction" then
+                        entry.remote:InvokeServer(table.unpack(entry.lastArgs))
+                    else
+                        entry.remote:FireServer(table.unpack(entry.lastArgs))
+                    end
+                end)
+                if ok then fired = fired + 1 else failed = failed + 1 end
+            else
+                skipped = skipped + 1
+            end
+        end
+    end
+    remoteStatus.Text = "Played " .. fired .. " with args, " .. skipped .. " skipped, " .. failed .. " failed"
+    addEntry("SYSTEM", "PLAY_ALL_ARGS fired=" .. fired .. " skipped=" .. skipped .. " failed=" .. failed)
+end)
+
+-- ============================================================
+-- END REMOTE PANEL
+-- ============================================================
 
 local exportFrame = round(instance("Frame", {
     Visible = false,
@@ -516,14 +845,14 @@ end)
 
 local regularSize = UDim2.fromOffset(675, 530)
 local minimizedSize = UDim2.fromOffset(380, 55)
-local contents = {statsPanel, tools, toggles, viewport, footer, exportFrame}
+local contents = {statsPanel, tools, toggles, viewport, footer, exportFrame, remotePanel}
 
 local function restoreWindow()
     state.closed = false
     state.minimized = false
     main.Size = regularSize
     for _, element in ipairs(contents) do
-        element.Visible = element ~= exportFrame
+        element.Visible = (element ~= exportFrame and element ~= remotePanel)
     end
     minimizeButton.Text = "_"
     main.Visible = true
@@ -536,7 +865,7 @@ local function setMinimized(value)
     state.minimized = value
     main.Size = value and minimizedSize or regularSize
     for _, element in ipairs(contents) do
-        element.Visible = not value and element ~= exportFrame
+        element.Visible = (not value and element ~= exportFrame and element ~= remotePanel)
     end
     minimizeButton.Text = value and "+" or "_"
     main.Visible = true
@@ -1079,7 +1408,6 @@ if canHook and not ENV.__MorantActionRecorderHook then
     end
 end
 
-
 local function releaseOwned(map, object, counter)
     local connections = map[object]
     if not connections then return end
@@ -1375,6 +1703,31 @@ state.GetStats = function() return state.stats end
 state.CloseWindow = function() setClosed(true) end
 state.OpenWindow = restoreWindow
 
+state.DumpRemotes = function()
+    local count = scanRemotes()
+    for _, entry in ipairs(remoteCache) do hookRemoteArgs(entry.remote) end
+    renderRemoteList()
+    remotePanel.Visible = true
+    return count
+end
+state.PlayAllRemotes = function()
+    if #remoteCache == 0 then scanRemotes() end
+    local fired, failed = 0, 0
+    for _, entry in ipairs(remoteCache) do
+        if entry.remote and entry.remote.Parent then
+            local ok = pcall(function()
+                if entry.kind == "RemoteFunction" then
+                    entry.remote:InvokeServer()
+                else
+                    entry.remote:FireServer()
+                end
+            end)
+            if ok then fired = fired + 1 else failed = failed + 1 end
+        end
+    end
+    return fired, failed
+end
+state.GetRemoteList = function() return remoteCache end
 
 state.Destroy = function()
     if not state.alive then return end
@@ -1403,7 +1756,7 @@ task.spawn(function()
     end
 end)
 
-addEntry("SYSTEM", "UNIVERSAL_GAME_LOGGER_STARTED: _ minimize; X close; floating LOG reopen; F8 toggle; COPY ALL and SAVE TXT export")
+addEntry("SYSTEM", "UNIVERSAL_GAME_LOGGER_STARTED: _ minimize; X close; floating LOG reopen; F8 toggle; COPY ALL, SAVE TXT, DUMP REMOTES, PLAY ALL")
 addEntry("SYSTEM", state.remoteSupported and
     "Remote hook active (outgoing namecalls only)" or
     "Remote hook unsupported: GUI/interaction logging still available")
